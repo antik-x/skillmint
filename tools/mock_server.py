@@ -235,7 +235,49 @@ def cmd_get_settings(conn, args):
     return defaults
 
 
+def _dedup_agent_directories(conn):
+    """Issue #1 data cleanup: collapse agent rows sharing one skill_directory.
+
+    Mirrors Db::dedup_agent_directories in Rust. Keeps one survivor per
+    directory, preferring (1) rows with a source, (2) preset ids like
+    "agent-<slug>", (3) the earliest created_at. Returns the number removed.
+    """
+    rows = conn.execute(
+        "SELECT id, COALESCE(source, '') AS source, skill_directory, "
+        "COALESCE(created_at, 0) AS created_at FROM agents"
+    ).fetchall()
+    groups = {}
+    for r in rows:
+        r = dict(r)
+        groups.setdefault(r["skill_directory"], []).append(r)
+    removed = 0
+    for _, entries in groups.items():
+        if len(entries) <= 1:
+            continue
+        entries.sort(
+            key=lambda e: (
+                0 if e["source"] else 1,               # has source first
+                0 if str(e["id"]).startswith("agent-") else 1,  # preset id first
+                e["created_at"],                        # earliest first
+            )
+        )
+        for e in entries[1:]:
+            conn.execute("DELETE FROM sync_targets WHERE agent_id = ?", (e["id"],))
+            conn.execute("DELETE FROM agents WHERE id = ?", (e["id"],))
+            removed += 1
+    conn.commit()
+    return removed
+
+
 def cmd_init_app(conn, args):
+    # Issue #1 data cleanup: older builds left many duplicate agent rows per
+    # directory; collapse them so the UI count is correct on next load.
+    try:
+        removed = _dedup_agent_directories(conn)
+        if removed:
+            print(f"[mock] removed {removed} duplicate agent row(s)")
+    except Exception as e:
+        print(f"[mock] agent dedup failed: {e}")
     return None
 
 
