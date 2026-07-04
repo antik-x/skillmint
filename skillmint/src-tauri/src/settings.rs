@@ -118,6 +118,11 @@ pub struct Settings {
     /// local-first guarantee; must be explicitly enabled by the user.
     #[serde(default)]
     pub remote_enabled: bool,
+    /// M1: appearance theme. Persisted so it survives restarts; the frontend
+    /// applies it by toggling `document.documentElement.dataset.theme`.
+    /// Without this field the backend silently dropped `theme` on save (issue #2).
+    #[serde(default = "default_theme")]
+    pub theme: String,
     /// PRD-08 §3.6: optional LLM config for prompt semantic classification and
     /// daily summaries. When `api_key` is empty, LLM features are skipped and
     /// the pipeline never hard-fails (graceful degradation).
@@ -320,6 +325,15 @@ fn default_show_dock_icon() -> bool {
     true
 }
 
+fn default_theme() -> String {
+    "system".to_string()
+}
+
+/// Public alias used by `models::AppSettings`'s serde default attribute.
+pub fn default_theme_pub() -> String {
+    default_theme()
+}
+
 impl Default for Settings {
     fn default() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -334,6 +348,7 @@ impl Default for Settings {
             skill_scope_mode: SkillScopeMode::Global,
             project_skill_dir_name: default_project_skill_dir(),
             remote_enabled: false,
+            theme: default_theme(),
             ai: AiConfig::default(),
         }
     }

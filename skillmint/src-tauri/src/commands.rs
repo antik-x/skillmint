@@ -43,6 +43,7 @@ fn state_to_model(settings: &Settings) -> AppSettings {
         skill_scope_mode: settings.skill_scope_mode,
         project_skill_dir_name: settings.project_skill_dir_name.clone(),
         remote_enabled: settings.remote_enabled,
+        theme: settings.theme.clone(),
         ai,
     }
 }
@@ -2189,6 +2190,7 @@ pub fn save_settings(
     settings.skill_scope_mode = new_settings.skill_scope_mode;
     settings.project_skill_dir_name = new_settings.project_skill_dir_name;
     settings.remote_enabled = new_settings.remote_enabled;
+    settings.theme = new_settings.theme;
     // SECURITY: persist each model's API key to the keyring, never to settings.json.
     // Keep the user-supplied keys in memory so the UI echoes them back immediately.
     for model in &new_settings.ai.models {
