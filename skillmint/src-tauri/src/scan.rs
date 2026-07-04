@@ -50,19 +50,68 @@ fn agent_id_for(name: &str) -> String {
 
 /// Discover agents whose directories exist on this machine. PRD-06: groups preset
 /// rows by `(name, source)` into a single Agent owning all of its existing directories.
+///
+/// Directory-level dedup: when multiple presets resolve to the same physical
+/// directory (e.g. both "Kimi Code" and "Generic Agents" point at
+/// `~/.agents/skills`), only one Agent is emitted for that directory. We prefer
+/// the preset with a non-empty `source` (so collection attribution still works)
+/// and otherwise fall back to the first one encountered.
 pub fn discover_agents() -> Vec<Agent> {
     use std::collections::BTreeMap;
 
-    // (name, source) -> (first_dir, description) — one Agent per tool.
+    // dir -> chosen preset entry. Using the canonical path as the dedup key
+    // guarantees that the same directory is never listed twice.
+    let mut seen: std::collections::HashMap<PathBuf, (String, String, Option<String>)> =
+        std::collections::HashMap::new();
+    // (name, source) -> (dir, description) — one Agent per tool.
     let mut tools: BTreeMap<(String, String), (PathBuf, Option<String>)> = BTreeMap::new();
     for (name, source, rule, _role, description) in PRESETS {
         let path = expand_path(rule);
-        if path.exists() && path.is_dir() {
-            let key = (name.to_string(), source.to_string());
-            tools
-                .entry(key)
-                .or_insert_with(|| (path.clone(), description.map(|s| s.to_string())));
+        if !(path.exists() && path.is_dir()) {
+            continue;
         }
+        // Decide whether this directory is already claimed. We clone the prior
+        // claim out of the map before any mutation to avoid borrow conflicts.
+        let prior = seen.get(&path).cloned();
+        match prior {
+            // This directory was already claimed by another preset.
+            Some((prev_name, prev_source, _)) => {
+                let prev_has_source = !prev_source.is_empty();
+                let cur_has_source = !source.is_empty();
+                // Replace only if current is attributable (has source) and the
+                // previously kept one is not — i.e. upgrade from generic to
+                // specific tool attribution.
+                if cur_has_source && !prev_has_source {
+                    seen.insert(
+                        path.clone(),
+                        (
+                            name.to_string(),
+                            source.to_string(),
+                            description.map(|s| s.to_string()),
+                        ),
+                    );
+                    // Drop the previously inserted tool entry that pointed here.
+                    tools.remove(&(prev_name.clone(), prev_source.clone()));
+                } else {
+                    // Keep the earlier entry; skip this duplicate directory.
+                    continue;
+                }
+            }
+            None => {
+                seen.insert(
+                    path.clone(),
+                    (
+                        name.to_string(),
+                        source.to_string(),
+                        description.map(|s| s.to_string()),
+                    ),
+                );
+            }
+        }
+        let key = (name.to_string(), source.to_string());
+        tools
+            .entry(key)
+            .or_insert_with(|| (path.clone(), description.map(|s| s.to_string())));
     }
 
     tools
@@ -85,6 +134,13 @@ pub fn discover_agents() -> Vec<Agent> {
 
 /// Scan discovered agents and persist them to DB if new. PRD-06: an Agent is
 /// keyed by id (tool slug); re-scans update source but don't duplicate the row.
+///
+/// Issue #1 cleanup: rows persisted before directory-level dedup may still
+/// occupy a directory that now belongs to a different agent (e.g. a stale
+/// "Generic Agents" row next to "Kimi Code", both at `~/.agents/skills`). We
+/// delete such stale duplicates — but only when BOTH rows point at a directory
+/// the current scan still discovers, so user-created agents pointing at
+/// hand-added directories are never touched.
 pub fn scan_and_persist_agents(db: &Db) -> Result<Vec<Agent>> {
     let discovered = discover_agents();
     let existing: HashSet<String> = db.get_agents()?.into_iter().map(|a| a.id).collect();
@@ -95,6 +151,20 @@ pub fn scan_and_persist_agents(db: &Db) -> Result<Vec<Agent>> {
         } else {
             // Touch source on an already-known row (e.g. first run after PRD-06 upgrade).
             db.insert_agent(agent)?;
+        }
+    }
+
+    // Clean up legacy duplicates: for each discovered directory, any persisted
+    // agent that is NOT in the current discovered set but still points at that
+    // directory is a leftover from before dedup and should be removed.
+    let discovered_ids: HashSet<&String> = discovered.iter().map(|a| &a.id).collect();
+    let discovered_dirs: HashSet<&PathBuf> = discovered.iter().map(|a| &a.skill_directory).collect();
+    for row in db.get_agents()? {
+        if discovered_ids.contains(&row.id) {
+            continue;
+        }
+        if discovered_dirs.contains(&row.skill_directory) {
+            db.delete_agent(&row.id)?;
         }
     }
 

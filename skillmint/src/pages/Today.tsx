@@ -78,6 +78,15 @@ function formatTimeAgo(ts: number): string {
   return `${Math.floor(diff / 86_400_000)} 天前`;
 }
 
+/// Issue #3: the backend fills `by_project` keys with full absolute paths
+/// (e.g. "/Users/foo/projects/skill-hub"). For display we only want the
+/// project name, so take the last non-empty path segment. Keys that already
+/// are short names (no slash) pass through unchanged.
+function projectBasename(pathOrName: string): string {
+  const parts = pathOrName.split("/").filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : pathOrName;
+}
+
 interface DailySummaryMeta {
   date: string;
   created_at: number;
@@ -588,9 +597,11 @@ function StoryCard({
     const scale = fallbackMetrics?.token_dimension?.scale;
     const projectDistribution = fallbackMetrics?.token_dimension?.distribution?.by_project ?? {};
     const projects = Object.keys(projectDistribution).slice(0, 3);
-    const mostActiveProject = projects.length > 0
+    const mostActiveProjectPath = projects.length > 0
       ? projects.reduce((a, b) => (projectDistribution[a] > projectDistribution[b] ? a : b))
       : null;
+    // Issue #3: show the project name, not the full absolute path.
+    const mostActiveProject = mostActiveProjectPath ? projectBasename(mostActiveProjectPath) : null;
     const sessions = scale?.model_calls ?? 0;
     const tokens = scale?.total_tokens ?? 0;
     const agentCount = agents.length;

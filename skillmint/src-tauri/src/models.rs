@@ -138,6 +138,9 @@ pub struct AppSettings {
     /// PRD-07: master switch for remote features.
     #[serde(default)]
     pub remote_enabled: bool,
+    /// M1: appearance theme ("light" | "dark" | "system").
+    #[serde(default = "crate::settings::default_theme_pub")]
+    pub theme: String,
     /// PRD-08 §3.6: optional LLM config for classification + daily summaries.
     #[serde(default)]
     pub ai: crate::settings::AiConfig,

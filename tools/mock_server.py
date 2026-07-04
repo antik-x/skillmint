@@ -202,10 +202,27 @@ def cmd_get_settings(conn, args):
         "onboarding_completed": True,
         "skill_scope_mode": "global",
         "project_skill_dir_name": ".skillmint/skills",
+        "remote_enabled": False,
+        "theme": "system",
+        "ai": {
+            "models": [],
+            "acp_connections": [],
+            "default_chat_model_id": None,
+            "default_embedding_model_id": None,
+            "prefer_acp": False,
+            "strict_local_mode": False,
+        },
     }
     if settings_path.exists():
         try:
-            defaults.update(json.loads(settings_path.read_text()))
+            saved = json.loads(settings_path.read_text())
+            defaults.update(saved)
+            # Deep-merge ai so a partially-saved settings.json doesn't drop
+            # sub-fields the frontend expects (issue #2: AI/ACP went missing).
+            saved_ai = saved.get("ai") or {}
+            merged_ai = dict(defaults["ai"])
+            merged_ai.update(saved_ai)
+            defaults["ai"] = merged_ai
         except Exception:
             pass
     if not defaults.get("device_id"):
@@ -218,7 +235,49 @@ def cmd_get_settings(conn, args):
     return defaults
 
 
+def _dedup_agent_directories(conn):
+    """Issue #1 data cleanup: collapse agent rows sharing one skill_directory.
+
+    Mirrors Db::dedup_agent_directories in Rust. Keeps one survivor per
+    directory, preferring (1) rows with a source, (2) preset ids like
+    "agent-<slug>", (3) the earliest created_at. Returns the number removed.
+    """
+    rows = conn.execute(
+        "SELECT id, COALESCE(source, '') AS source, skill_directory, "
+        "COALESCE(created_at, 0) AS created_at FROM agents"
+    ).fetchall()
+    groups = {}
+    for r in rows:
+        r = dict(r)
+        groups.setdefault(r["skill_directory"], []).append(r)
+    removed = 0
+    for _, entries in groups.items():
+        if len(entries) <= 1:
+            continue
+        entries.sort(
+            key=lambda e: (
+                0 if e["source"] else 1,               # has source first
+                0 if str(e["id"]).startswith("agent-") else 1,  # preset id first
+                e["created_at"],                        # earliest first
+            )
+        )
+        for e in entries[1:]:
+            conn.execute("DELETE FROM sync_targets WHERE agent_id = ?", (e["id"],))
+            conn.execute("DELETE FROM agents WHERE id = ?", (e["id"],))
+            removed += 1
+    conn.commit()
+    return removed
+
+
 def cmd_init_app(conn, args):
+    # Issue #1 data cleanup: older builds left many duplicate agent rows per
+    # directory; collapse them so the UI count is correct on next load.
+    try:
+        removed = _dedup_agent_directories(conn)
+        if removed:
+            print(f"[mock] removed {removed} duplicate agent row(s)")
+    except Exception as e:
+        print(f"[mock] agent dedup failed: {e}")
     return None
 
 
@@ -1271,8 +1330,25 @@ def cmd_save_settings(conn, args):
         Path.home() / "Library" / "Application Support" / "com.skillmint" / "settings.json"
     )
     settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(json.dumps(new, indent=2))
-    return new
+    # Merge onto existing file so fields the frontend doesn't send (e.g. older
+    # persisted keys) survive, mirroring the Rust backend's field-by-field copy.
+    existing = {}
+    if settings_path.exists():
+        try:
+            existing = json.loads(settings_path.read_text())
+        except Exception:
+            existing = {}
+    existing.update(new)
+    # Deep-merge ai so saving doesn't clobber a previously-stored model list
+    # when the payload only carries a subset of ai sub-fields (issue #2).
+    merged_ai = dict(existing.get("ai") or {})
+    if isinstance(new.get("ai"), dict):
+        merged_ai.update(new["ai"])
+    existing["ai"] = merged_ai
+    settings_path.write_text(json.dumps(existing, indent=2, ensure_ascii=False))
+    # Return through the same get path so the shape always matches what the
+    # frontend expects (including device_id fallback and default ai fields).
+    return cmd_get_settings(conn, args)
 
 
 def cmd_get_conflict_contents(conn, args):

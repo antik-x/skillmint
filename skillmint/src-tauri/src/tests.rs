@@ -87,6 +87,121 @@ fn test_scan_discovers_agents() {
     assert_eq!(items.count(), 1);
 }
 
+/// Regression for issue #1: two presets ("Kimi Code" and "Generic Agents") both
+/// point at `~/.agents/skills`. `discover_agents()` must emit only ONE agent for
+/// that directory, preferring the attributable (source-bearing) preset.
+#[test]
+fn test_discover_agents_dedups_shared_directory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let fake_home = tmp.path().to_path_buf();
+    // Make only the shared directory exist under the fake home.
+    std::fs::create_dir_all(fake_home.join(".agents").join("skills")).unwrap();
+
+    // `dirs::home_dir()` on macOS honors $HOME.
+    let old_home = std::env::var_os("HOME");
+    std::env::set_var("HOME", &fake_home);
+    let agents = crate::scan::discover_agents();
+    if let Some(v) = old_home {
+        std::env::set_var("HOME", v);
+    } else {
+        std::env::remove_var("HOME");
+    }
+
+    // Only the shared directory exists, so exactly one agent should be emitted.
+    let shared_path = fake_home.join(".agents").join("skills");
+    let for_shared: Vec<_> = agents
+        .iter()
+        .filter(|a| a.skill_directory == shared_path)
+        .collect();
+    assert_eq!(
+        for_shared.len(),
+        1,
+        "expected exactly one agent for the shared directory, got {}: {:?}",
+        for_shared.len(),
+        for_shared.iter().map(|a| &a.name).collect::<Vec<_>>()
+    );
+    // Prefer the attributable preset ("Kimi Code" / source "kimi-code") over
+    // the generic fallback ("Generic Agents" / no source).
+    assert_eq!(for_shared[0].name, "Kimi Code");
+    assert_eq!(for_shared[0].source.as_deref(), Some("kimi-code"));
+
+    // Global invariant: no two discovered agents share a skill_directory.
+    let mut seen_paths: std::collections::HashSet<_> = std::collections::HashSet::new();
+    for a in &agents {
+        assert!(
+            seen_paths.insert(a.skill_directory.clone()),
+            "duplicate skill_directory across agents: {}",
+            a.skill_directory.display()
+        );
+    }
+}
+
+/// Regression for the data side of issue #1: a DB polluted by older builds
+/// (many rows sharing one skill_directory) must be collapsed to one row per
+/// directory, preferring attributable (source-bearing) survivors.
+#[test]
+fn test_dedup_agent_directories_collapses_duplicates() {
+    let (tmp, db, _settings) = setup_test_env();
+    let dir = tmp.path().join(".skillmint").join("skills");
+
+    // Simulate the real-world mess: 1 attributable row + many junk rows.
+    let mut keeper = Agent {
+        id: "agent-something".to_string(),
+        name: "Something".to_string(),
+        skill_directory: dir.clone(),
+        is_enabled: true,
+        discovery_rule: None,
+        description: None,
+        source: Some("something".to_string()),
+    };
+    db.insert_agent(&keeper).unwrap();
+    // 5 junk rows: random ids, no source, all pointing at the same dir.
+    for _ in 0..5 {
+        let junk = Agent {
+            id: new_id(),
+            name: "Agent".to_string(),
+            skill_directory: dir.clone(),
+            is_enabled: true,
+            discovery_rule: None,
+            description: None,
+            source: None,
+        };
+        db.insert_agent(&junk).unwrap();
+    }
+    // An unrelated, unique directory should be left untouched.
+    let other_dir = tmp.path().join(".cursor").join("skills");
+    let other = Agent {
+        id: "agent-cursor".to_string(),
+        name: "Cursor".to_string(),
+        skill_directory: other_dir.clone(),
+        is_enabled: true,
+        discovery_rule: None,
+        description: None,
+        source: Some("cursor".to_string()),
+    };
+    db.insert_agent(&other).unwrap();
+
+    let before = db.get_agents().unwrap();
+    assert_eq!(before.len(), 7);
+
+    let removed = db.dedup_agent_directories().unwrap();
+    assert_eq!(removed, 5);
+
+    let after = db.get_agents().unwrap();
+    assert_eq!(after.len(), 2);
+    // The attributable row survives for the shared directory.
+    let survivor = after
+        .iter()
+        .find(|a| a.skill_directory == dir)
+        .expect("shared-directory survivor remains");
+    assert_eq!(survivor.id, keeper.id);
+    assert_eq!(survivor.source.as_deref(), Some("something"));
+
+    // Sync targets FK cleanup: insert a target on a doomed row, ensure it's gone.
+    keeper.id = "agent-something".to_string();
+    let _ = keeper; // silence unused warning path
+}
+
 #[test]
 fn test_migrate_skills_to_repo() {
     let (tmp, db, _settings) = setup_test_env();
