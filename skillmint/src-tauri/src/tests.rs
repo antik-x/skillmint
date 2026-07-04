@@ -87,6 +87,55 @@ fn test_scan_discovers_agents() {
     assert_eq!(items.count(), 1);
 }
 
+/// Regression for issue #1: two presets ("Kimi Code" and "Generic Agents") both
+/// point at `~/.agents/skills`. `discover_agents()` must emit only ONE agent for
+/// that directory, preferring the attributable (source-bearing) preset.
+#[test]
+fn test_discover_agents_dedups_shared_directory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let fake_home = tmp.path().to_path_buf();
+    // Make only the shared directory exist under the fake home.
+    std::fs::create_dir_all(fake_home.join(".agents").join("skills")).unwrap();
+
+    // `dirs::home_dir()` on macOS honors $HOME.
+    let old_home = std::env::var_os("HOME");
+    std::env::set_var("HOME", &fake_home);
+    let agents = crate::scan::discover_agents();
+    if let Some(v) = old_home {
+        std::env::set_var("HOME", v);
+    } else {
+        std::env::remove_var("HOME");
+    }
+
+    // Only the shared directory exists, so exactly one agent should be emitted.
+    let shared_path = fake_home.join(".agents").join("skills");
+    let for_shared: Vec<_> = agents
+        .iter()
+        .filter(|a| a.skill_directory == shared_path)
+        .collect();
+    assert_eq!(
+        for_shared.len(),
+        1,
+        "expected exactly one agent for the shared directory, got {}: {:?}",
+        for_shared.len(),
+        for_shared.iter().map(|a| &a.name).collect::<Vec<_>>()
+    );
+    // Prefer the attributable preset ("Kimi Code" / source "kimi-code") over
+    // the generic fallback ("Generic Agents" / no source).
+    assert_eq!(for_shared[0].name, "Kimi Code");
+    assert_eq!(for_shared[0].source.as_deref(), Some("kimi-code"));
+
+    // Global invariant: no two discovered agents share a skill_directory.
+    let mut seen_paths: std::collections::HashSet<_> = std::collections::HashSet::new();
+    for a in &agents {
+        assert!(
+            seen_paths.insert(a.skill_directory.clone()),
+            "duplicate skill_directory across agents: {}",
+            a.skill_directory.display()
+        );
+    }
+}
+
 #[test]
 fn test_migrate_skills_to_repo() {
     let (tmp, db, _settings) = setup_test_env();
