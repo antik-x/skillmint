@@ -1,0 +1,80 @@
+@import "./styles/design-tokens.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer utilities {
+  /* Glassmorphism surfaces used by sidebar, toasts, modals */
+  .surface-glass {
+    background-color: rgba(var(--bg-secondary-rgb, 30, 30, 30), 0.72);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-color: var(--border-subtle);
+  }
+
+  /* Focus ring matching macOS accent */
+  .focus-ring {
+    @apply outline-none ring-2 ring-[var(--accent)] ring-offset-2 ring-offset-[var(--bg-primary)];
+  }
+
+  /* Primary button gradient sheen */
+  .btn-primary-gradient {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.16) 0%, rgba(255, 255, 255, 0) 100%), var(--accent);
+  }
+
+  /* Safe area for Tauri window drag region if needed */
+  .app-region-drag {
+    -webkit-app-region: drag;
+  }
+
+  .app-region-no-drag {
+    -webkit-app-region: no-drag;
+  }
+
+  .tabular {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Page transition animation classes */
+.page-enter {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.page-enter-active {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 200ms cubic-bezier(0.25, 0.46, 0.45, 0.94),
+    transform 200ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+.page-exit {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.page-exit-active {
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 150ms cubic-bezier(0.25, 0.46, 0.45, 0.94),
+    transform 150ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+/* Toast enter animation */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.toast-enter {
+  animation: toast-in 250ms cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+}

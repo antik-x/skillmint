@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# Node / Vite build outputs
+node_modules/
+skillmint/node_modules/
+skillmint/dist/
+
+# Rust / Tauri build outputs
+skillmint/src-tauri/target/
+skillmint/src-tauri/gen/
+
+# Local environment / editor
+.env
+.env.local
+.vscode/
+.idea/

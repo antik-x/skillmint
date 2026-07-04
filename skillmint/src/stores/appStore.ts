@@ -1,0 +1,219 @@
+import { create } from "zustand";
+import { invoke } from "@tauri-apps/api/core";
+import type { Skill, Agent, SyncTarget, AppSettings } from "../types";
+
+/** 重构后的顶层入口，符合 SPEC-I4 信息架构。 */
+export type AppTab =
+  | "today"
+  | "inbox"
+  | "growthAssets"
+  | "skillLibrary"
+  | "knowledgeGraph"
+  | "discover"
+  | "agents"
+  | "projects"
+  | "usage"
+  | "weeklyReport"
+  | "settings"
+  | "dashboard"
+  | "dailySummaries";
+
+export type SkillLibrarySubTab = "skills" | "bundles" | "graph" | "discover";
+export type SettingsSubTab = "preferences" | "dataCollection" | "scheduledTasks" | "dataManagement" | "aiAnalysis" | "about";
+
+/** 旧版 tab key，用于状态迁移或外部持久化值的兼容映射。 */
+type LegacyTab =
+  | "dashboard"
+  | "dailySummaries"
+  | "skills"
+  | "agents"
+  | "projects"
+  | "usage"
+  | "dataCollection"
+  | "scheduledTasks"
+  | "graph"
+  | "discover"
+  | "conflicts"
+  | "settings";
+
+interface AppState {
+  initialized: boolean;
+  activeTab: AppTab;
+  skillLibrarySubTab: SkillLibrarySubTab;
+  settingsSubTab: SettingsSubTab;
+  selectedSkillId: string | null;
+  selectedSkillName: string | null;
+  sidebarVisible: boolean;
+  newSkillRequest: number;
+  discoverSearchTerm: string | null;
+  skillEditMode: boolean;
+  inboxRefreshKey: number;
+  skills: Skill[];
+  agents: Agent[];
+  syncTargets: SyncTarget[];
+  settings: AppSettings;
+  setInitialized: (value: boolean) => void;
+  setActiveTab: (tab: AppState["activeTab"]) => void;
+  setSkillLibrarySubTab: (subTab: SkillLibrarySubTab) => void;
+  setSettingsSubTab: (subTab: SettingsSubTab) => void;
+  navigateToSettings: (subTab: SettingsSubTab) => void;
+  setSelectedSkillId: (id: string | null) => void;
+  setSelectedSkillName: (name: string | null) => void;
+  toggleSidebar: () => void;
+  setSidebarVisible: (visible: boolean) => void;
+  requestNewSkill: () => void;
+  navigateToSkill: (skillId: string, subTab?: SkillLibrarySubTab) => void;
+  navigateToSkillEditor: (skillId: string) => void;
+  setDiscoverSearchTerm: (term: string | null) => void;
+  setSkillEditMode: (value: boolean) => void;
+  bumpInboxRefresh: () => void;
+  setSkills: (skills: Skill[]) => void;
+  setAgents: (agents: Agent[]) => void;
+  setSyncTargets: (targets: SyncTarget[]) => void;
+  setSettings: (settings: AppSettings) => void;
+  loadData: () => Promise<void>;
+}
+
+/**
+ * 将旧版 tab key 映射到新的顶层 tab + 子导航。
+ * 当前 activeTab 未持久化，但保留映射层以防御未来持久化值或 URL 传参。
+ */
+export function normalizeTab(
+  legacy: LegacyTab
+): { tab: AppTab; skillLibrarySubTab?: SkillLibrarySubTab; settingsSubTab?: SettingsSubTab } {
+  switch (legacy) {
+    case "dashboard":
+    case "dailySummaries":
+      return { tab: "today" };
+    case "skills":
+      return { tab: "skillLibrary", skillLibrarySubTab: "skills" };
+    case "graph":
+      return { tab: "skillLibrary", skillLibrarySubTab: "graph" };
+    case "discover":
+      return { tab: "skillLibrary", skillLibrarySubTab: "discover" };
+    case "dataCollection":
+      return { tab: "settings", settingsSubTab: "dataCollection" };
+    case "scheduledTasks":
+      return { tab: "settings", settingsSubTab: "scheduledTasks" };
+    case "conflicts":
+      return { tab: "today" };
+    default:
+      return { tab: legacy as AppTab };
+  }
+}
+
+const defaultSettings: AppSettings = {
+  device_id: "",
+  center_repo: "",
+  default_sync_mode: "symlink",
+  auto_sync_interval_minutes: 5,
+  launch_at_login: false,
+  show_dock_icon: true,
+  onboarding_completed: false,
+  skill_scope_mode: "global",
+  project_skill_dir_name: ".skillmint/skills",
+  remote_enabled: false,
+  theme: "system",
+  ai: {
+    models: [],
+    acp_connections: [],
+    default_chat_model_id: undefined,
+    default_embedding_model_id: undefined,
+    prefer_acp: false,
+    strict_local_mode: false,
+  },
+};
+
+const SIDEBAR_STORAGE_KEY = "skillmint:sidebar-visible";
+
+function readSidebarDefault(): boolean {
+  try {
+    const raw = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    return raw === null ? true : raw === "true";
+  } catch {
+    return true;
+  }
+}
+
+function writeSidebarVisible(visible: boolean): void {
+  try {
+    localStorage.setItem(SIDEBAR_STORAGE_KEY, String(visible));
+  } catch {
+    // ignore storage errors (e.g. private mode)
+  }
+}
+
+export const useAppStore = create<AppState>((set, get) => ({
+  initialized: false,
+  activeTab: "today",
+  skillLibrarySubTab: "skills",
+  settingsSubTab: "preferences",
+  selectedSkillId: null,
+  selectedSkillName: null,
+  sidebarVisible: readSidebarDefault(),
+  newSkillRequest: 0,
+  discoverSearchTerm: null,
+  skillEditMode: false,
+  inboxRefreshKey: 0,
+  skills: [],
+  agents: [],
+  syncTargets: [],
+  settings: defaultSettings,
+  setInitialized: (value) => set({ initialized: value }),
+  setActiveTab: (tab) => {
+    // M1: legacy routes redirect to today.
+    if (tab === "dashboard") {
+      set({ activeTab: "today" });
+      return;
+    }
+    // M1: knowledge graph / discover are Skill Library subtabs.
+    if (tab === "knowledgeGraph") {
+      set({ activeTab: "knowledgeGraph", skillLibrarySubTab: "graph" });
+      return;
+    }
+    if (tab === "discover") {
+      set({ activeTab: "discover", skillLibrarySubTab: "discover" });
+      return;
+    }
+    set({ activeTab: tab });
+  },
+  setSkillLibrarySubTab: (subTab) => set({ skillLibrarySubTab: subTab }),
+  setSettingsSubTab: (subTab) => set({ settingsSubTab: subTab }),
+  navigateToSettings: (subTab) => set({ activeTab: "settings", settingsSubTab: subTab }),
+  setSelectedSkillId: (id) => set({ selectedSkillId: id }),
+  setSelectedSkillName: (name) => set({ selectedSkillName: name }),
+  toggleSidebar: () => {
+    const next = !get().sidebarVisible;
+    writeSidebarVisible(next);
+    set({ sidebarVisible: next });
+  },
+  setSidebarVisible: (visible) => {
+    writeSidebarVisible(visible);
+    set({ sidebarVisible: visible });
+  },
+  requestNewSkill: () => set((state) => ({ newSkillRequest: state.newSkillRequest + 1 })),
+  navigateToSkill: (skillId, subTab = "skills") =>
+    set({ activeTab: "skillLibrary", skillLibrarySubTab: subTab, selectedSkillId: skillId }),
+  navigateToSkillEditor: (skillId) =>
+    set({
+      activeTab: "skillLibrary",
+      skillLibrarySubTab: "skills",
+      selectedSkillId: skillId,
+      skillEditMode: true,
+    }),
+  setDiscoverSearchTerm: (term) => set({ discoverSearchTerm: term }),
+  setSkillEditMode: (value) => set({ skillEditMode: value }),
+  bumpInboxRefresh: () => set((state) => ({ inboxRefreshKey: state.inboxRefreshKey + 1 })),
+  setSkills: (skills) => set({ skills }),
+  setAgents: (agents) => set({ agents }),
+  setSyncTargets: (targets) => set({ syncTargets: targets }),
+  setSettings: (settings) => set({ settings }),
+  loadData: async () => {
+    const [skills, agents, syncTargets] = await Promise.all([
+      invoke<Skill[]>("get_skills"),
+      invoke<Agent[]>("get_agents"),
+      invoke<SyncTarget[]>("get_sync_targets"),
+    ]);
+    set({ skills, agents, syncTargets });
+  },
+}));

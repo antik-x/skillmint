@@ -1,0 +1,243 @@
+/**
+ * Apple / macOS inspired design tokens for SkillMint.
+ * Supports light and dark color schemes via CSS variables and
+ * a small set of semantic utility classes.
+ *
+ * M1 update (SPEC-I4):
+ * - Surfaces shifted to blue-purple dark tint (#0f0f13 family).
+ * - Accent switched from iOS blue to indigo (#6e7bf2 / #4f5be8).
+ * - Amber signature color family added for "experience" semantics only.
+ * - Knowledge graph, overlay and dialog width tokens added.
+ */
+
+@tailwind base;
+
+:root {
+  /* Brand / interaction accent — indigo, never used for experience semantics. */
+  --accent: #4f5be8;
+  --accent-hover: #3d49d6;
+  --accent-rgb: 79, 91, 232;
+  --accent-dim: rgba(79, 91, 232, 0.10);
+
+  /* Signature amber — experience / growth semantics only. */
+  --amber: #b87f1f;
+  --amber-dim: rgba(184, 127, 31, 0.10);
+  --amber-glow: rgba(184, 127, 31, 0.28);
+
+  /* Semantic colors. */
+  --success: #34c759;
+  --success-rgb: 52, 199, 89;
+  --warning: #ff9f0a;
+  --warning-rgb: 255, 159, 10;
+  --danger: #ff3b30;
+  --danger-rgb: 255, 59, 48;
+  --info: #5ac8fa;
+  --info-rgb: 90, 200, 250;
+
+  /* Knowledge graph domain colors. */
+  --kg-concept: #7c8cf8;
+  --kg-scenario: #56b8e6;
+  --kg-practice: #4cc38a;
+  --kg-tool: #c084fc;
+  --kg-fallback: var(--text-tertiary);
+
+  /* Overlay and dialog widths. */
+  --overlay: rgba(0, 0, 0, 0.5);
+  --dialog-sm: 480px;
+  --dialog-md: 560px;
+  --dialog-lg: 720px;
+
+  /* Radius scale. */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+
+  /* Transition. */
+  --transition-fast: 150ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  --transition-base: 200ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+
+  /* Font stacks. */
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+
+  /* Light mode defaults. */
+  --bg-primary: #ffffff;
+  --bg-secondary: #f5f5f7;
+  --bg-tertiary: #e8e8ed;
+  --bg-elevated: #ffffff;
+  --bg-primary-rgb: 255, 255, 255;
+  --bg-secondary-rgb: 245, 245, 247;
+  --bg-tertiary-rgb: 232, 232, 237;
+
+  --text-primary: #1d1d1f;
+  --text-secondary: #6e6e73;
+  --text-tertiary: #a1a1a6;
+  --text-inverse: #ffffff;
+
+  --border-subtle: rgba(0, 0, 0, 0.08);
+  --border-prominent: rgba(0, 0, 0, 0.16);
+  --divider: rgba(0, 0, 0, 0.06);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.12);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --accent: #6e7bf2;
+    --accent-hover: #8590f5;
+    --accent-rgb: 110, 123, 242;
+    --accent-dim: rgba(110, 123, 242, 0.14);
+
+    --amber: #d9a248;
+    --amber-dim: rgba(217, 162, 72, 0.12);
+    --amber-glow: rgba(217, 162, 72, 0.35);
+
+    --success: #4cc38a;
+    --warning: #ff9f0a;
+    --danger: #f2555a;
+    --info: #56b8e6;
+
+    --bg-primary: #0f0f13;
+    --bg-secondary: #16161c;
+    --bg-tertiary: #1c1c24;
+    --bg-elevated: #22222b;
+    --bg-primary-rgb: 15, 15, 19;
+    --bg-secondary-rgb: 22, 22, 28;
+    --bg-tertiary-rgb: 28, 28, 36;
+
+    --text-primary: #ececf1;
+    --text-secondary: #9c9ca8;
+    --text-tertiary: #61616e;
+    --text-inverse: #1d1d1f;
+
+    --border-subtle: rgba(255, 255, 255, 0.07);
+    --border-prominent: rgba(255, 255, 255, 0.14);
+    --divider: rgba(255, 255, 255, 0.06);
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.24);
+    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.32);
+    --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.48);
+  }
+}
+
+/* Manual overrides, persisted by Settings. */
+[data-theme="light"] {
+  --accent: #4f5be8;
+  --accent-hover: #3d49d6;
+  --accent-rgb: 79, 91, 232;
+  --accent-dim: rgba(79, 91, 232, 0.10);
+
+  --amber: #b87f1f;
+  --amber-dim: rgba(184, 127, 31, 0.10);
+  --amber-glow: rgba(184, 127, 31, 0.28);
+
+  --success: #34c759;
+  --warning: #ff9f0a;
+  --danger: #ff3b30;
+  --info: #5ac8fa;
+
+  --bg-primary: #ffffff;
+  --bg-secondary: #f5f5f7;
+  --bg-tertiary: #e8e8ed;
+  --bg-elevated: #ffffff;
+  --bg-primary-rgb: 255, 255, 255;
+  --bg-secondary-rgb: 245, 245, 247;
+  --bg-tertiary-rgb: 232, 232, 237;
+
+  --text-primary: #1d1d1f;
+  --text-secondary: #6e6e73;
+  --text-tertiary: #a1a1a6;
+  --text-inverse: #ffffff;
+
+  --border-subtle: rgba(0, 0, 0, 0.08);
+  --border-prominent: rgba(0, 0, 0, 0.16);
+  --divider: rgba(0, 0, 0, 0.06);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="dark"] {
+  --accent: #6e7bf2;
+  --accent-hover: #8590f5;
+  --accent-rgb: 110, 123, 242;
+  --accent-dim: rgba(110, 123, 242, 0.14);
+
+  --amber: #d9a248;
+  --amber-dim: rgba(217, 162, 72, 0.12);
+  --amber-glow: rgba(217, 162, 72, 0.35);
+
+  --success: #4cc38a;
+  --warning: #ff9f0a;
+  --danger: #f2555a;
+  --info: #56b8e6;
+
+  --bg-primary: #0f0f13;
+  --bg-secondary: #16161c;
+  --bg-tertiary: #1c1c24;
+  --bg-elevated: #22222b;
+  --bg-primary-rgb: 15, 15, 19;
+  --bg-secondary-rgb: 22, 22, 28;
+  --bg-tertiary-rgb: 28, 28, 36;
+
+  --text-primary: #ececf1;
+  --text-secondary: #9c9ca8;
+  --text-tertiary: #61616e;
+  --text-inverse: #1d1d1f;
+
+  --border-subtle: rgba(255, 255, 255, 0.07);
+  --border-prominent: rgba(255, 255, 255, 0.14);
+  --divider: rgba(255, 255, 255, 0.06);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.24);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.32);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.48);
+}
+
+@layer base {
+  body {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow: hidden;
+  }
+
+  #root {
+    height: 100vh;
+    width: 100vw;
+  }
+
+  /* macOS-style subtle scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--text-tertiary);
+    border-radius: 4px;
+    opacity: 0.4;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--text-secondary);
+  }
+
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  /* Selection color */
+  ::selection {
+    background-color: rgba(var(--accent-rgb), 0.3);
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "name": "skillmint",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "test": "vitest",
+    "test:ci": "vitest run"
+  },
+  "dependencies": {
+    "@react-sigma/core": "^5.0.6",
+    "@tanstack/react-virtual": "^3.14.4",
+    "@tauri-apps/api": "^2.5.0",
+    "@tauri-apps/plugin-autostart": "^2.3.0",
+    "@tauri-apps/plugin-dialog": "^2.2.0",
+    "@tauri-apps/plugin-fs": "^2.2.1",
+    "@tauri-apps/plugin-notification": "^2.2.2",
+    "@tauri-apps/plugin-opener": "^2.2.6",
+    "@types/js-yaml": "^4.0.9",
+    "clsx": "^2.1.1",
+    "graphology": "^0.26.0",
+    "graphology-layout-forceatlas2": "^0.10.1",
+    "js-yaml": "^5.2.0",
+    "lucide-react": "^1.22.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "tailwind-merge": "^3.6.0",
+    "zustand": "^5.0.4"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.5.0",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.21",
+    "jsdom": "^26.1.0",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.8.3",
+    "vite": "^6.2.6",
+    "vitest": "^3.2.4"
+  }
+}

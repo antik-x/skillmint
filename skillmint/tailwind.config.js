@@ -1,0 +1,91 @@
+/** @type {import('tailwindcss').Config} */
+export default {
+  darkMode: ["class", '[data-theme="dark"]'],
+  content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"],
+  theme: {
+    extend: {
+      colors: {
+        primary: "var(--bg-primary)",
+        secondary: "var(--bg-secondary)",
+        tertiary: "var(--bg-tertiary)",
+        elevated: "var(--bg-elevated)",
+        accent: "var(--accent)",
+        "accent-hover": "var(--accent-hover)",
+        "accent-dim": "var(--accent-dim)",
+        amber: "var(--amber)",
+        "amber-dim": "var(--amber-dim)",
+        "amber-glow": "var(--amber-glow)",
+        success: "var(--success)",
+        warning: "var(--warning)",
+        danger: "var(--danger)",
+        info: "var(--info)",
+        border: "var(--border-subtle)",
+        "border-prominent": "var(--border-prominent)",
+        divider: "var(--divider)",
+        overlay: "var(--overlay)",
+        "kg-concept": "var(--kg-concept)",
+        "kg-scenario": "var(--kg-scenario)",
+        "kg-practice": "var(--kg-practice)",
+        "kg-tool": "var(--kg-tool)",
+        "kg-fallback": "var(--kg-fallback)",
+      },
+      textColor: {
+        primary: "var(--text-primary)",
+        secondary: "var(--text-secondary)",
+        tertiary: "var(--text-tertiary)",
+        inverse: "var(--text-inverse)",
+      },
+      backgroundColor: {
+        primary: "var(--bg-primary)",
+        secondary: "var(--bg-secondary)",
+        tertiary: "var(--bg-tertiary)",
+        elevated: "var(--bg-elevated)",
+      },
+      borderRadius: {
+        sm: "var(--radius-sm)",
+        md: "var(--radius-md)",
+        lg: "var(--radius-lg)",
+        xl: "var(--radius-xl)",
+      },
+      boxShadow: {
+        sm: "var(--shadow-sm)",
+        md: "var(--shadow-md)",
+        lg: "var(--shadow-lg)",
+      },
+      transitionTimingFunction: {
+        "apple-ease": "cubic-bezier(0.25, 0.46, 0.45, 0.94)",
+      },
+      transitionDuration: {
+        150: "150ms",
+        200: "200ms",
+      },
+      fontSize: {
+        "2xs": ["10px", { lineHeight: "1.4" }],
+      },
+      fontFamily: {
+        sans: [
+          "-apple-system",
+          "BlinkMacSystemFont",
+          '"SF Pro Display"',
+          '"Segoe UI"',
+          "Roboto",
+          '"Helvetica Neue"',
+          "Arial",
+          "sans-serif",
+        ],
+        mono: ["var(--font-mono)"],
+      },
+      width: {
+        "dialog-sm": "var(--dialog-sm)",
+        "dialog-md": "var(--dialog-md)",
+        "dialog-lg": "var(--dialog-lg)",
+      },
+      maxWidth: {
+        "dialog-sm": "var(--dialog-sm)",
+        "dialog-md": "var(--dialog-md)",
+        "dialog-lg": "var(--dialog-lg)",
+      },
+    },
+  },
+  plugins: [],
+};

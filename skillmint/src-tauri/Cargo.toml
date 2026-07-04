@@ -1,0 +1,63 @@
+[package]
+name = "skillmint"
+version = "0.1.0"
+description = "SkillMint — local-first macOS app that turns AI coding sessions into reusable SKILL.md assets"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+name = "skillmint_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.2.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.5.0", features = ["tray-icon", "image-png"] }
+tauri-plugin-autostart = "2.3.0"
+tauri-plugin-deep-link = "2"
+tauri-plugin-dialog = "2.2.0"
+tauri-plugin-fs = "2.2.1"
+tauri-plugin-notification = "2.2.2"
+tauri-plugin-opener = "2.2.6"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+tokio = { version = "1.44", features = ["full"] }
+chrono = { version = "0.4", features = ["serde"] }
+tempfile = "3.19"
+walkdir = "2.5"
+sha2 = "0.10"
+hex = "0.4"
+dirs = "6.0"
+anyhow = "1.0"
+thiserror = "2.0"
+rusqlite = { version = "0.34", features = ["bundled"] }
+uuid = { version = "1.16", features = ["v4"] }
+zip = "2"
+# PRD-07: remote skill sources (GitHub tarball fetch + extract).
+# reqwest blocking with rustls avoids a system OpenSSL dependency; rustls-tls
+# keeps the native TLS off the build chain.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+flate2 = "1.1"
+tar = "0.4"
+# PRD-08: secure credential storage. Stores the LLM API key in the macOS
+# Keychain / platform credential store instead of settings.json.
+keyring = { version = "3.6", features = ["apple-native", "windows-native", "linux-native"] }
+# PRD-08: percent-encode file paths when building SQLite URI strings, so paths
+# containing spaces or non-ASCII characters still open correctly.
+percent-encoding = "2.3"
+cron = "0.17.0"
+# P1-1: locate locally-installed agent CLIs on PATH for ACP auto-detection.
+which = "7.0"
+
+[[bin]]
+name = "skillmint"
+path = "src/main.rs"
+
+[[bin]]
+name = "repair_paths"
+path = "src/bin/repair_paths.rs"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
