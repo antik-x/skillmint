@@ -1160,6 +1160,163 @@ fn test_rename_skill_rolls_back_on_agent_failure() {
     );
 }
 
+/// P1-5: a skill renamed on disk is paired by drift scan (front matter
+/// evidence), and --apply converges DB + disk through rename_skill.
+#[test]
+#[cfg(unix)]
+fn test_repair_pairs_renamed_skill_and_applies() {
+    let (tmp, db, settings) = setup_test_env();
+
+    let agent_dir = tmp.path().join("home").join(".cursor").join("skills");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    let agent = insert_agent(&db, "Cursor", &agent_dir);
+    let skill = insert_skill(&db, &settings, "old-name", "---\nname: old-name\n---\n\n# body\n");
+    let target = SyncTarget {
+        id: new_id(),
+        skill_id: skill.id.clone(),
+        skill_name: Some(skill.name.clone()),
+        agent_id: agent.id.clone(),
+        agent_name: Some(agent.name.clone()),
+        mode: SyncMode::Symlink,
+        last_sync_at: None,
+        status: SyncStatus::Synced,
+    };
+    db.insert_sync_target(&target).unwrap();
+    crate::sync::apply_sync_target(&target, &skill, &agent).unwrap();
+
+    // The directory is renamed outside the app; front matter keeps old name.
+    let new_dir = settings.center_repo.join("new-name");
+    std::fs::rename(&skill.repo_path, &new_dir).unwrap();
+
+    // Dry-run: one pair, no side effects.
+    let drift = crate::commands::scan_repair_drift(&db, &settings).unwrap();
+    assert_eq!(drift.rename_pairs.len(), 1);
+    assert_eq!(drift.rename_pairs[0].old_name, "old-name");
+    assert_eq!(drift.rename_pairs[0].new_name, "new-name");
+    assert!(drift.orphans.is_empty(), "paired dir is not an orphan");
+    assert!(db.get_skill_by_name("old-name").unwrap().is_some(), "dry-run must not change DB");
+    assert!(new_dir.is_dir(), "dry-run must not touch disk");
+
+    // Apply: DB + agent links converge on the new name.
+    let summary = crate::commands::apply_repair_drift(&db, &settings, &drift).unwrap();
+    assert_eq!(summary.renamed.len(), 1);
+    assert!(summary.failed.is_empty());
+    assert!(db.get_skill_by_name("new-name").unwrap().is_some());
+    assert!(db.get_skill_by_name("old-name").unwrap().is_none());
+    let link = agent_dir.join("new-name");
+    assert!(link.is_symlink());
+    assert_eq!(resolve_symlink(&link), new_dir);
+    assert!(!agent_dir.join("old-name").exists() && !agent_dir.join("old-name").is_symlink());
+
+    // After convergence the drift scan is clean.
+    let drift2 = crate::commands::scan_repair_drift(&db, &settings).unwrap();
+    assert!(drift2.rename_pairs.is_empty());
+    assert!(drift2.orphans.is_empty());
+}
+
+/// P1-5: ambiguous pairing is reported unresolved, never guessed.
+#[test]
+#[cfg(unix)]
+fn test_repair_rename_ambiguous_candidates_unresolved() {
+    let (_tmp, db, settings) = setup_test_env();
+    let skill = insert_skill(&db, &settings, "gone", "---\nname: gone\n---\n");
+
+    // Two unregistered dirs both carrying the old front matter name.
+    for dir_name in ["cand-a", "cand-b"] {
+        let d = settings.center_repo.join(dir_name);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("SKILL.md"), "---\nname: gone\n---\n").unwrap();
+    }
+    std::fs::remove_dir_all(&skill.repo_path).unwrap();
+
+    let drift = crate::commands::scan_repair_drift(&db, &settings).unwrap();
+    assert!(drift.rename_pairs.is_empty());
+    assert_eq!(drift.rename_unresolved.len(), 1);
+    assert!(drift.rename_unresolved[0].reason.contains("不唯一"));
+    assert!(drift.orphans.is_empty(), "candidates are reserved, not orphans");
+}
+
+/// P1-5: orphan center dirs are reported, registered on apply, and flagged
+/// by the integrity reverse check.
+#[test]
+#[cfg(unix)]
+fn test_repair_orphan_registration_and_integrity_reverse_check() {
+    let (tmp, db, settings) = setup_test_env();
+
+    let agent_dir = tmp.path().join("home").join(".cursor").join("skills");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    let _agent = insert_agent(&db, "Cursor", &agent_dir);
+
+    // One registered skill keeps the repo "in use"; the orphan sits next to it.
+    let _known = insert_skill(&db, &settings, "known-skill", "# known\n");
+    let orphan_dir = settings.center_repo.join("orphan-skill");
+    std::fs::create_dir_all(&orphan_dir).unwrap();
+    std::fs::write(orphan_dir.join("SKILL.md"), "---\nname: orphan-skill\n---\n").unwrap();
+
+    // Reverse integrity check flags orphans.
+    let integrity = crate::commands::check_repo_integrity_inner(&db, &settings).unwrap();
+    assert!(
+        matches!(integrity, crate::models::RepoIntegrity::OrphansPresent),
+        "orphan must be flagged: {integrity:?}"
+    );
+
+    let drift = crate::commands::scan_repair_drift(&db, &settings).unwrap();
+    assert_eq!(drift.orphans.len(), 1);
+    assert_eq!(drift.orphans[0].name, "orphan-skill");
+
+    let summary = crate::commands::apply_repair_drift(&db, &settings, &drift).unwrap();
+    assert_eq!(summary.orphans_registered, vec!["orphan-skill".to_string()]);
+    assert!(summary.failed.is_empty());
+
+    // Registered like an import: DB row + sync target + agent link.
+    let row = db.get_skill_by_name("orphan-skill").unwrap().unwrap();
+    assert_eq!(row.repo_path, orphan_dir);
+    let targets = db.get_sync_targets().unwrap();
+    assert!(targets.iter().any(|t| t.skill_id == row.id));
+    assert!(agent_dir.join("orphan-skill").is_symlink());
+
+    let integrity = crate::commands::check_repo_integrity_inner(&db, &settings).unwrap();
+    assert!(matches!(integrity, crate::models::RepoIntegrity::Healthy));
+}
+
+/// P1-5: dangling agent-dir symlinks into a legacy root are reported and
+/// removed on apply; entity dirs and unrelated links are never touched.
+#[test]
+#[cfg(unix)]
+fn test_repair_legacy_link_cleanup() {
+    let (tmp, db, settings) = setup_test_env();
+
+    let agent_dir = tmp.path().join("home").join(".cursor").join("skills");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    let _agent = insert_agent(&db, "Cursor", &agent_dir);
+
+    // A dangling symlink into a legacy layout root (stands in for ~/.skillsync).
+    let legacy_root = tmp.path().join("home").join(".skillsync");
+    std::os::unix::fs::symlink(legacy_root.join("legacy-skill"), agent_dir.join("legacy-skill"))
+        .unwrap();
+    // A healthy entity dir and an unrelated broken link: both must survive.
+    create_agent_skill(&agent_dir, "real-skill", "# real\n");
+    std::os::unix::fs::symlink(tmp.path().join("elsewhere"), agent_dir.join("other")).unwrap();
+
+    let drift = crate::commands::scan_repair_drift_with_roots(&db, &settings, &[legacy_root])
+        .unwrap();
+    assert_eq!(drift.legacy_links.len(), 1, "only the legacy link is reported");
+    assert!(drift.legacy_links[0].path.ends_with("legacy-skill"));
+
+    // Dry-run removed nothing.
+    assert!(agent_dir.join("legacy-skill").is_symlink());
+
+    let summary = crate::commands::apply_repair_drift(&db, &settings, &drift).unwrap();
+    assert_eq!(summary.legacy_links_removed.len(), 1);
+    assert!(summary.failed.is_empty());
+    assert!(!agent_dir.join("legacy-skill").exists() && !agent_dir.join("legacy-skill").is_symlink());
+    assert!(agent_dir.join("real-skill").is_dir(), "entity dir untouched");
+    assert!(
+        agent_dir.join("other").is_symlink(),
+        "unrelated broken link untouched"
+    );
+}
+
 #[test]
 fn test_check_repo_integrity_detects_missing_repo() {
     let (tmp, db, mut settings) = setup_test_env();

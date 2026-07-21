@@ -178,6 +178,9 @@ pub enum RepoIntegrity {
     Healthy,
     /// Center repo is missing/empty but the DB still has skill records.
     MissingWithRecords,
+    /// P1-5 reverse check: the center repo contains unregistered skill
+    /// directories (orphans) while the DB itself is consistent.
+    OrphansPresent,
 }
 
 /// Outcome of restoring a Center Repo zip backup (PRD-0 §4.8).

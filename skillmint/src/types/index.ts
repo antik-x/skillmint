@@ -105,7 +105,7 @@ export interface SyncAllResult {
   failures: SyncFailure[];
 }
 
-export type RepoIntegrity = "healthy" | "missing_with_records";
+export type RepoIntegrity = "healthy" | "missing_with_records" | "orphans_present";
 
 // PRD-02: usage data collection (mirrors Rust models.rs)
 export interface CollectedSource {

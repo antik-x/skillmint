@@ -105,7 +105,7 @@
 
 ---
 
-## P1-5 `repair_paths` / `check_repo_integrity` 扩展：自动发现并治愈"改名+孤儿"
+## P1-5 `repair_paths` / `check_repo_integrity` 扩展：自动发现并治愈"改名+孤儿" ✅ (2026-07-21)
 
 **现象**：本次排障前跑了 `repair_paths`，migrated 0——它只 detect「`repo_path` 指向旧扁平布局 `~/.skillmint/<skill>`」的行（commands.rs:60 `migrate_skills_to_repo`），对"目录被改名"和"center 有目录未登记"两类最常见漂移无能为力。`check_repo_integrity`（commands.rs:203）也只查"DB 有但 center 缺"的单向问题。
 

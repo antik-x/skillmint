@@ -214,10 +214,15 @@ pub(crate) fn check_repo_integrity_inner(
         true
     };
     if has_skills && (!repo_exists || repo_empty) {
-        Ok(RepoIntegrity::MissingWithRecords)
-    } else {
-        Ok(RepoIntegrity::Healthy)
+        return Ok(RepoIntegrity::MissingWithRecords);
     }
+    // P1-5 reverse check: center has unregistered skill dirs (orphans).
+    if repo_exists && !repo_empty {
+        if !list_center_orphans(db, settings)?.is_empty() {
+            return Ok(RepoIntegrity::OrphansPresent);
+        }
+    }
+    Ok(RepoIntegrity::Healthy)
 }
 
 #[tauri::command]
@@ -983,6 +988,13 @@ fn rollback_center_rename(
     }
 }
 
+/// Rollback for the already-moved case (P1-5): the center dir stays at
+/// new_name; only the front matter rewrite is reverted.
+fn rollback_fm_only(new_dir: &std::path::Path, new_name: &str, old_name: &str) {
+    let skill_md = crate::fs::get_effective_skill_dir(new_dir, None).join("SKILL.md");
+    let _ = crate::fs::rewrite_skill_md_name(&skill_md, new_name, old_name);
+}
+
 pub(crate) fn rename_skill_impl(
     db: &crate::db::Db,
     settings: &Settings,
@@ -1005,14 +1017,23 @@ pub(crate) fn rename_skill_impl(
         "同名 Skill 已存在: {new_name}"
     );
     let old_dir = skill.repo_path.clone();
-    anyhow::ensure!(old_dir.is_dir(), "center 目录不存在: {}", old_dir.display());
     let parent = old_dir
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| settings.center_repo.clone());
     let new_dir = parent.join(new_name);
+    // Idempotence (P1-5): the directory may already sit at new_name — the
+    // user renamed it outside the app, or a previous rename died between the
+    // fs move and the DB transaction. In that case this call converges DB +
+    // agent links without moving the center dir again.
+    let center_already_moved = !old_dir.is_dir() && new_dir.is_dir();
     anyhow::ensure!(
-        !new_dir.exists() && !new_dir.is_symlink(),
+        old_dir.is_dir() || center_already_moved,
+        "center 目录不存在: {}",
+        old_dir.display()
+    );
+    anyhow::ensure!(
+        center_already_moved || (!new_dir.exists() && !new_dir.is_symlink()),
         "center 已存在同名目录: {}",
         new_dir.display()
     );
@@ -1027,8 +1048,11 @@ pub(crate) fn rename_skill_impl(
     // ---------- file operations, best-effort rollback on failure ----------
     let mut undos: Vec<AgentUndo> = Vec::new();
     let fs_result: anyhow::Result<()> = (|| {
-        std::fs::rename(&old_dir, &new_dir)?;
+        if !center_already_moved {
+            std::fs::rename(&old_dir, &new_dir)?;
+        }
         // Repo convention: directory name == SKILL.md front matter name.
+        // Idempotent: a no-op when the front matter already carries new_name.
         let skill_md = crate::fs::get_effective_skill_dir(&new_dir, None).join("SKILL.md");
         crate::fs::rewrite_skill_md_name(&skill_md, old_name, new_name)?;
         for target in &targets {
@@ -1053,7 +1077,11 @@ pub(crate) fn rename_skill_impl(
         for undo in undos.iter().rev() {
             undo_agent_op(undo);
         }
-        rollback_center_rename(&new_dir, &old_dir, new_name, old_name);
+        if center_already_moved {
+            rollback_fm_only(&new_dir, new_name, old_name);
+        } else {
+            rollback_center_rename(&new_dir, &old_dir, new_name, old_name);
+        }
         return Err(e.context("改名文件操作失败，已尽力回滚"));
     }
 
@@ -1062,7 +1090,11 @@ pub(crate) fn rename_skill_impl(
         for undo in undos.iter().rev() {
             undo_agent_op(undo);
         }
-        rollback_center_rename(&new_dir, &old_dir, new_name, old_name);
+        if center_already_moved {
+            rollback_fm_only(&new_dir, new_name, old_name);
+        } else {
+            rollback_center_rename(&new_dir, &old_dir, new_name, old_name);
+        }
         return Err(e.context("DB 改名事务失败，已回滚文件操作"));
     }
 
@@ -3585,12 +3617,320 @@ pub fn preview_skill_from_prompt(prompt_text: String) -> Result<SkillPromptPrevi
 pub struct RepairSkillPathsReport {
     pub migrated: Vec<String>,
     pub failed: Vec<RepairFailure>,
+    /// P1-5: rename/orphan/legacy healing applied in the same pass.
+    pub drift: RepairApplySummary,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct RepairFailure {
     pub skill: String,
     pub reason: String,
+}
+
+/// P1-5: one suggested rename pairing — a DB row whose repo_path is gone,
+/// matched to an unregistered center dir.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct RepairRenamePair {
+    pub skill_id: String,
+    pub old_name: String,
+    pub new_name: String,
+    pub evidence: String,
+}
+
+/// P1-5: a center-repo skill directory not registered in the DB.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct RepairOrphan {
+    pub name: String,
+    pub path: String,
+}
+
+/// P1-5: a dangling symlink in an agent dir pointing under a legacy layout
+/// root (e.g. ~/.skillsync).
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct RepairLegacyLink {
+    pub path: String,
+    pub target: String,
+}
+
+/// P1-5: full drift picture between the DB and the center repo / agent dirs.
+/// Produced by [`scan_repair_drift`] (dry-run) and consumed by
+/// [`apply_repair_drift`].
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct RepairDriftReport {
+    pub rename_pairs: Vec<RepairRenamePair>,
+    pub rename_unresolved: Vec<RepairFailure>,
+    pub orphans: Vec<RepairOrphan>,
+    pub legacy_links: Vec<RepairLegacyLink>,
+}
+
+/// P1-5: outcome of applying a [`RepairDriftReport`].
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct RepairApplySummary {
+    pub renamed: Vec<String>,
+    pub orphans_registered: Vec<String>,
+    pub legacy_links_removed: Vec<String>,
+    pub failed: Vec<RepairFailure>,
+}
+
+/// P1-5: center-repo directories that are real skills (P0-3 rules) but not
+/// registered in the DB. Shared by the drift scan and the integrity check.
+pub(crate) fn list_center_orphans(
+    db: &crate::db::Db,
+    settings: &Settings,
+) -> Result<Vec<RepairOrphan>, String> {
+    let registered: std::collections::HashSet<String> = db
+        .get_skills()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    let mut orphans = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&settings.center_repo) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.is_empty() || registered.contains(&name) {
+                continue;
+            }
+            if crate::scan::is_excluded_scan_name(&name, &settings.scan_exclude_names) {
+                continue;
+            }
+            if !crate::scan::is_skill_dir(&path) {
+                continue;
+            }
+            orphans.push(RepairOrphan {
+                name,
+                path: path.to_string_lossy().to_string(),
+            });
+        }
+    }
+    orphans.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(orphans)
+}
+
+/// P1-5: read-only drift detection between the DB and the filesystem.
+///
+/// - rename pairing: DB rows whose repo_path vanished are matched against
+///   unregistered center dirs. Evidence: the orphan's SKILL.md front matter
+///   still carries the old name, or an agent-side entity copy of the old
+///   name hashes equal to the orphan. Only a UNIQUE candidate becomes a
+///   pair — anything else lands in `rename_unresolved` (never guess).
+/// - orphan discovery: unregistered center skill dirs not consumed by a pair.
+/// - legacy leftovers: dangling symlinks in agent dirs pointing under a
+///   legacy layout root (~/.skillsync).
+pub fn scan_repair_drift(
+    db: &crate::db::Db,
+    settings: &Settings,
+) -> Result<RepairDriftReport, String> {
+    let home = dirs::home_dir().unwrap_or_default();
+    let legacy_roots = [home.join(".skillsync")];
+    scan_repair_drift_with_roots(db, settings, &legacy_roots)
+}
+
+/// Inner scan with explicit legacy roots (tests inject a temp root).
+pub(crate) fn scan_repair_drift_with_roots(
+    db: &crate::db::Db,
+    settings: &Settings,
+    legacy_roots: &[PathBuf],
+) -> Result<RepairDriftReport, String> {
+    let mut report = RepairDriftReport::default();
+    let skills = db.get_skills().map_err(|e| e.to_string())?;
+    let orphans = list_center_orphans(db, settings)?;
+    let agents = db.get_agents().map_err(|e| e.to_string())?;
+
+    let mut reserved: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for skill in skills.iter().filter(|s| !s.repo_path.exists()) {
+        let mut candidates: Vec<(String, String)> = Vec::new();
+        for orphan in &orphans {
+            let orphan_path = PathBuf::from(&orphan.path);
+            // Evidence 1: dir renamed but SKILL.md front matter left behind.
+            let fm_md = crate::fs::get_effective_skill_dir(&orphan_path, None).join("SKILL.md");
+            if let Ok(content) = std::fs::read_to_string(&fm_md) {
+                if crate::fs::skill_md_front_matter_name(&content).as_deref()
+                    == Some(skill.name.as_str())
+                {
+                    candidates.push((
+                        orphan.name.clone(),
+                        "SKILL.md front matter name 与旧名一致".to_string(),
+                    ));
+                    continue;
+                }
+            }
+            // Evidence 2: an agent-side entity copy of the old name hashes
+            // equal to the orphan dir.
+            if let Ok(orphan_hash) = crate::fs::compute_hash(&orphan_path) {
+                let hash_matches = agents.iter().any(|agent| {
+                    let agent_copy = agent.skill_directory.join(&skill.name);
+                    agent_copy.is_dir()
+                        && !agent_copy.is_symlink()
+                        && crate::fs::compute_hash(&agent_copy)
+                            .map(|h| h == orphan_hash)
+                            .unwrap_or(false)
+                });
+                if hash_matches {
+                    candidates.push((
+                        orphan.name.clone(),
+                        "与 agent 侧旧名副本内容一致 (hash)".to_string(),
+                    ));
+                }
+            }
+        }
+        candidates.sort();
+        candidates.dedup();
+        // Candidate dirs are reserved for this missing row even when the
+        // pairing is ambiguous — they must not be registered as orphans.
+        for (name, _) in &candidates {
+            reserved.insert(name.clone());
+        }
+        match candidates.len() {
+            1 => {
+                let (new_name, evidence) = candidates.pop().unwrap();
+                report.rename_pairs.push(RepairRenamePair {
+                    skill_id: skill.id.clone(),
+                    old_name: skill.name.clone(),
+                    new_name,
+                    evidence,
+                });
+            }
+            0 => report.rename_unresolved.push(RepairFailure {
+                skill: skill.name.clone(),
+                reason: "center 中找不到等价目录，无法配对".to_string(),
+            }),
+            n => report.rename_unresolved.push(RepairFailure {
+                skill: skill.name.clone(),
+                reason: format!(
+                    "配对候选不唯一（{n} 个）：{}",
+                    candidates
+                        .iter()
+                        .map(|(name, _)| name.clone())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            }),
+        }
+    }
+
+    // Orphans consumed by a rename pair (or reserved by an ambiguous one)
+    // are not reported for registration.
+    report.orphans = orphans
+        .into_iter()
+        .filter(|o| !reserved.contains(&o.name))
+        .collect();
+
+    // Legacy leftovers: broken links in agent dirs pointing at legacy roots.
+    for agent in &agents {
+        if let Ok(entries) = std::fs::read_dir(&agent.skill_directory) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !crate::fs::is_broken_symlink(&path) {
+                    continue;
+                }
+                let target = std::fs::read_link(&path).unwrap_or_default();
+                if legacy_roots.iter().any(|root| target.starts_with(root)) {
+                    report.legacy_links.push(RepairLegacyLink {
+                        path: path.to_string_lossy().to_string(),
+                        target: target.to_string_lossy().to_string(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(report)
+}
+
+/// Register one orphan center dir, mirroring the import flow: insert the
+/// skill row, create sync targets for every enabled agent, and apply them.
+fn register_orphan_skill(
+    db: &crate::db::Db,
+    settings: &Settings,
+    orphan: &RepairOrphan,
+    enabled_agents: &[&Agent],
+) -> Result<(), String> {
+    if db
+        .get_skill_by_name(&orphan.name)
+        .map_err(|e| e.to_string())?
+        .is_some()
+    {
+        return Err("DB 中已存在同名记录，跳过".to_string());
+    }
+    let now = current_timestamp();
+    let skill = Skill {
+        id: new_id(),
+        name: orphan.name.clone(),
+        repo_path: PathBuf::from(&orphan.path),
+        created_at: now,
+        updated_at: now,
+        status: SkillStatus::Draft,
+    };
+    db.insert_skill(&skill).map_err(|e| e.to_string())?;
+    for agent in enabled_agents {
+        let target = SyncTarget {
+            id: new_id(),
+            skill_id: skill.id.clone(),
+            skill_name: Some(skill.name.clone()),
+            agent_id: agent.id.clone(),
+            agent_name: Some(agent.name.clone()),
+            mode: settings.default_sync_mode,
+            last_sync_at: None,
+            status: SyncStatus::CenterChanged,
+        };
+        db.insert_sync_target(&target).map_err(|e| e.to_string())?;
+        let _ = apply_sync_target_and_record(db, &target, &skill, agent);
+    }
+    Ok(())
+}
+
+/// P1-5: execute a previously-scanned drift report. Renames go through
+/// rename_skill (P1-4, with its own rollback); orphans are registered like
+/// imports; only confirmed-dangling legacy symlinks are removed — entity
+/// directories are never touched.
+pub fn apply_repair_drift(
+    db: &crate::db::Db,
+    settings: &Settings,
+    report: &RepairDriftReport,
+) -> Result<RepairApplySummary, String> {
+    let mut summary = RepairApplySummary::default();
+
+    for pair in &report.rename_pairs {
+        match rename_skill_impl(db, settings, &pair.old_name, &pair.new_name) {
+            Ok(_) => summary
+                .renamed
+                .push(format!("{} -> {}", pair.old_name, pair.new_name)),
+            Err(e) => summary.failed.push(RepairFailure {
+                skill: pair.old_name.clone(),
+                reason: format!("rename 失败：{e}"),
+            }),
+        }
+    }
+
+    let agents = db.get_agents().map_err(|e| e.to_string())?;
+    let enabled: Vec<&Agent> = agents.iter().filter(|a| a.is_enabled).collect();
+    for orphan in &report.orphans {
+        match register_orphan_skill(db, settings, orphan, &enabled) {
+            Ok(()) => summary.orphans_registered.push(orphan.name.clone()),
+            Err(reason) => summary.failed.push(RepairFailure {
+                skill: orphan.name.clone(),
+                reason,
+            }),
+        }
+    }
+
+    for link in &report.legacy_links {
+        let path = PathBuf::from(&link.path);
+        if !crate::fs::is_broken_symlink(&path) {
+            continue;
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => summary.legacy_links_removed.push(link.path.clone()),
+            Err(e) => summary.failed.push(RepairFailure {
+                skill: link.path.clone(),
+                reason: format!("删除悬空链失败：{e}"),
+            }),
+        }
+    }
+
+    let _ = invalidate_directory_skill_cache(db, None);
+    Ok(summary)
 }
 
 #[tauri::command]
@@ -3598,6 +3938,10 @@ pub fn repair_skill_paths(state: State<'_, AppState>) -> Result<RepairSkillPaths
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let settings = state.settings.lock().map_err(|e| e.to_string())?;
     let report = migrate_skills_to_repo(&db, &settings.center_repo)?;
+    // P1-5: the same repair pass now also heals rename drift, orphans and
+    // legacy leftovers (the binary shares this via scan/apply_repair_drift).
+    let drift = scan_repair_drift(&db, &settings)?;
+    let drift_applied = apply_repair_drift(&db, &settings, &drift)?;
     Ok(RepairSkillPathsReport {
         migrated: report.migrated,
         failed: report
@@ -3608,6 +3952,7 @@ pub fn repair_skill_paths(state: State<'_, AppState>) -> Result<RepairSkillPaths
                 reason: f.reason,
             })
             .collect(),
+        drift: drift_applied,
     })
 }
 

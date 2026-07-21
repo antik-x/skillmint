@@ -158,8 +158,7 @@ pub fn is_symlink_to(path: &Path, target: &Path) -> bool {
 /// exactly matches `old` (repo convention: directory name == front matter
 /// name). Returns true when the file was rewritten; every other line is
 /// preserved verbatim.
-pub fn rewrite_skill_md_name(skill_md: &Path, old: &str, new: &str) -> Result<bool> {
-    if !skill_md.is_file() {
+pub fn rewrite_skill_md_name(skill_md: &Path, old: &str, new: &str) -> Result<bool> {    if !skill_md.is_file() {
         return Ok(false);
     }
     let content = std::fs::read_to_string(skill_md)?;
@@ -196,6 +195,30 @@ pub fn rewrite_skill_md_name(skill_md: &Path, old: &str, new: &str) -> Result<bo
         std::fs::write(skill_md, body)?;
     }
     Ok(changed)
+}
+
+/// P1-5: extract the `name:` field from a SKILL.md YAML front matter block.
+/// Returns None when there is no front matter or no name field.
+pub fn skill_md_front_matter_name(content: &str) -> Option<String> {
+    let mut lines = content.lines();
+    if lines.next().map(str::trim_end) != Some("---") {
+        return None;
+    }
+    for line in lines {
+        let trimmed = line.trim_end();
+        if trimmed == "---" {
+            return None;
+        }
+        if let Some(value) = trimmed.strip_prefix("name:") {
+            let value = value.trim().trim_matches('"').trim_matches('\'');
+            return if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            };
+        }
+    }
+    None
 }
 
 /// Resolve symlink target, returning original path if not a symlink.
