@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: cargo test + vitest
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: skillmint/src-tauri
+
+      - name: Install Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: skillmint/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: skillmint
+        run: npm ci
+
+      - name: Frontend tests (vitest)
+        working-directory: skillmint
+        run: npm run test:ci
+
+      - name: Backend tests (cargo)
+        working-directory: skillmint/src-tauri
+        run: cargo test
+
+  bundle:
+    name: tauri build + bundle assertions
+    runs-on: macos-14
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: skillmint/src-tauri
+
+      - name: Install Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: skillmint/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: skillmint
+        run: npm ci
+
+      # Builds the app (with the repair_paths sidecar) and asserts the bundle
+      # ships the tray icons and the sidecar — same checks as local
+      # `make build-install verify`, without installing to /Applications.
+      - name: Build and verify bundle
+        run: make build verify-bundle
