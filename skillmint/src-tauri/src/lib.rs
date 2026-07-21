@@ -110,6 +110,24 @@ fn emit_deep_link_event(app: &AppHandle, name: &str, payload: &Option<String>) {
     }
 }
 
+/// P1-2: tray shortcut target — wake the window and route the frontend to a
+/// page. Routed through the same reliability buffer as deep links so a click
+/// landing before the frontend is ready is replayed rather than lost.
+fn tray_navigate(app: &AppHandle, target: &str) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    if let Some(state) = app.try_state::<AppState>() {
+        for (name, payload) in state
+            .deep_links
+            .push("tray-navigate", Some(target.to_string()))
+        {
+            emit_deep_link_event(app, &name, &payload);
+        }
+    }
+}
+
 /// (Re)start the auto-sync scheduler using the current `auto_sync_interval_minutes`.
 /// Stops any running loop first, then starts a new one if the interval is > 0.
 /// Called on app setup and whenever settings are saved (so a cadence change — or
@@ -289,9 +307,26 @@ pub fn run() {
                 true,
                 None::<&str>,
             )?;
+            // P1-2: direct entries so the tray stays a usable navigation
+            // entry point even when the window is hidden.
+            let skills_i = tauri::menu::MenuItem::with_id(
+                &app_handle,
+                "open-skill-library",
+                "Skill 库",
+                true,
+                None::<&str>,
+            )?;
+            let sync_i = tauri::menu::MenuItem::with_id(
+                &app_handle,
+                "open-sync-health",
+                "同步健康",
+                true,
+                None::<&str>,
+            )?;
             let quit_i =
                 tauri::menu::MenuItem::with_id(&app_handle, "quit", "退出", true, None::<&str>)?;
-            let menu = tauri::menu::Menu::with_items(&app_handle, &[&show_i, &quit_i])?;
+            let menu =
+                tauri::menu::Menu::with_items(&app_handle, &[&show_i, &skills_i, &sync_i, &quit_i])?;
 
             // F5: fall back to a bundled icon if the default window icon cannot be loaded.
             let tray_icon = match app_handle.default_window_icon() {
@@ -334,6 +369,8 @@ pub fn run() {
                             let _ = window.set_focus();
                         }
                     }
+                    "open-skill-library" => tray_navigate(app, "skillLibrary"),
+                    "open-sync-health" => tray_navigate(app, "today"),
                     _ => {}
                 })
                 .build(&app_handle)?;
@@ -452,6 +489,21 @@ pub fn run() {
                             }
                         }
                         Err(e) => eprintln!("[trash] failed to open db: {e}"),
+                    }
+                });
+            }
+
+            // P1-2: hide instead of destroy on close. Closing the window used
+            // to destroy the WebView and lose all SPA state (e.g. a half-filled
+            // import dialog); hiding keeps the scene intact for tray/deep-link
+            // re-entry. Quit semantics are preserved: app.exit() (tray 退出)
+            // and Cmd+Q go through RunEvent::ExitRequested, not CloseRequested.
+            if let Some(window) = app.get_webview_window("main") {
+                let w = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = w.hide();
                     }
                 });
             }

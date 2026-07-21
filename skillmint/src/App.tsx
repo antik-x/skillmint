@@ -143,6 +143,7 @@ function App() {
     let unlisten: UnlistenFn | undefined;
     let unlistenSync: UnlistenFn | undefined;
     let unlistenOpen: UnlistenFn | undefined;
+    let unlistenNav: UnlistenFn | undefined;
 
     const setup = async () => {
       unlisten = await listen<string>("deep-link", (e) => {
@@ -164,6 +165,13 @@ function App() {
         setActiveTab("skillLibrary");
         setSelectedSkillName(e.payload);
       });
+      // P1-2: tray 直达菜单（Skill 库 / 同步健康）——Rust 侧 show+focus 后
+      // 经 deep-link 可靠性通道重发，这里只做页面路由。
+      unlistenNav = await listen<string>("tray-navigate", (e) => {
+        if (e.payload === "skillLibrary" || e.payload === "today") {
+          setActiveTab(e.payload);
+        }
+      });
       // P1-1: listeners are registered — tell the backend to replay any
       // deep links that arrived before the WebView was ready.
       emit("app-ready");
@@ -174,6 +182,7 @@ function App() {
       unlisten?.();
       unlistenSync?.();
       unlistenOpen?.();
+      unlistenNav?.();
     };
   }, [loadData, setActiveTab, setSelectedSkillName]);
 
