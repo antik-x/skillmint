@@ -941,6 +941,34 @@ fn test_is_skill_dir_requires_skill_md() {
     assert!(crate::scan::is_excluded_scan_name("scratch", &extra));
 }
 
+/// P1-1: deep-link events arriving before the frontend is ready must be
+/// buffered and replayed in arrival order; afterwards they pass through.
+#[test]
+fn test_deep_link_buffer_replays_in_order_after_ready() {
+    let buf = crate::DeepLinkBuffer::new();
+
+    // Before ready: nothing is emitted immediately.
+    assert!(buf.push("deep-link", Some("skillmint://sync".into())).is_empty());
+    assert!(buf.push("deep-link-sync", None).is_empty());
+    assert!(buf.push("deep-link-open-skill", Some("foo".into())).is_empty());
+
+    // mark_ready drains the backlog in arrival order.
+    let drained = buf.mark_ready();
+    assert_eq!(
+        drained,
+        vec![
+            ("deep-link".to_string(), Some("skillmint://sync".to_string())),
+            ("deep-link-sync".to_string(), None),
+            ("deep-link-open-skill".to_string(), Some("foo".to_string())),
+        ]
+    );
+
+    // After ready: events pass through immediately and nothing accumulates.
+    let immediate = buf.push("deep-link-sync", None);
+    assert_eq!(immediate, vec![("deep-link-sync".to_string(), None)]);
+    assert!(buf.mark_ready().is_empty(), "backlog stays drained");
+}
+
 #[test]
 fn test_check_repo_integrity_detects_missing_repo() {
     let (tmp, db, mut settings) = setup_test_env();
@@ -4346,6 +4374,7 @@ fn create_mock_state(tmp: &tempfile::TempDir, settings: &Settings) -> crate::App
         db: std::sync::Mutex::new(db),
         settings: std::sync::Mutex::new(settings.clone()),
         tray: std::sync::Mutex::new(None),
+        deep_links: crate::DeepLinkBuffer::new(),
         sync_stop: std::sync::Mutex::new(None),
         scheduler: std::sync::Mutex::new(None),
         scheduler_running: tokio::sync::Mutex::new(std::collections::HashMap::new()),

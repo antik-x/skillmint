@@ -1,6 +1,6 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "./lib/invoke";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import Sidebar from "./components/Sidebar";
 import ToastContainer from "./components/ToastContainer";
 import { PageTransition } from "./components/PageTransition";
@@ -164,6 +164,9 @@ function App() {
         setActiveTab("skillLibrary");
         setSelectedSkillName(e.payload);
       });
+      // P1-1: listeners are registered — tell the backend to replay any
+      // deep links that arrived before the WebView was ready.
+      emit("app-ready");
     };
     setup();
 

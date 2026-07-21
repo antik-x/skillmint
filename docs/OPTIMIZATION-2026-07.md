@@ -51,7 +51,7 @@
 
 ---
 
-## P1-1 deep link 必须能唤起窗口
+## P1-1 deep link 必须能唤起窗口 ✅ (2026-07-21)
 
 **现象**：`skillmint://sync`、`skillmint://open-skill` 唤起窗口成功率约五成。窗口不可见时，deep link 到达后 app 只向 WebView emit 事件，窗口不 show；多次实测（含重启后）窗口保持隐藏，事件疑似被前端消费但用户不可见。
 

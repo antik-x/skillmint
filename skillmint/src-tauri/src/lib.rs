@@ -36,6 +36,9 @@ pub struct AppState {
     pub db: Mutex<db::Db>,
     pub settings: Mutex<settings::Settings>,
     pub tray: Mutex<Option<tauri::tray::TrayIcon>>,
+    /// P1-1: buffers deep-link routing events until the frontend signals
+    /// "app-ready" (its listeners are registered), then replays them in order.
+    pub deep_links: DeepLinkBuffer,
     /// Stop handle for the auto-sync background loop.
     /// `Some(tx)` = loop running; sending `true` (or dropping the sender) stops it.
     /// `None` = no loop running (interval == 0 or not yet started).
@@ -51,6 +54,60 @@ pub struct AppState {
     /// The application's data directory (e.g. `~/Library/Application Support/com.skillmint.app`).
     /// Used for snapshots and other app-private storage.
     pub app_dir: PathBuf,
+}
+
+/// P1-1: deep links can arrive before the WebView has registered its event
+/// listeners (cold start, or window not yet created) — emitting then means the
+/// event is silently lost. Events are buffered until the frontend emits
+/// "app-ready", then replayed in arrival order; later events go straight
+/// through.
+pub struct DeepLinkBuffer {
+    ready: AtomicBool,
+    pending: Mutex<Vec<(String, Option<String>)>>,
+}
+
+impl DeepLinkBuffer {
+    pub fn new() -> Self {
+        Self {
+            ready: AtomicBool::new(false),
+            pending: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Enqueue one routing event (`name` + optional string payload). Returns
+    /// the events to emit right now: the event itself once the frontend is
+    /// ready, nothing while it is still buffered.
+    pub fn push(&self, name: &str, payload: Option<String>) -> Vec<(String, Option<String>)> {
+        if self.ready.load(std::sync::atomic::Ordering::SeqCst) {
+            return vec![(name.to_string(), payload)];
+        }
+        if let Ok(mut guard) = self.pending.lock() {
+            guard.push((name.to_string(), payload));
+        }
+        Vec::new()
+    }
+
+    /// Mark the frontend ready and drain the backlog in arrival order.
+    pub fn mark_ready(&self) -> Vec<(String, Option<String>)> {
+        self.ready.store(true, std::sync::atomic::Ordering::SeqCst);
+        match self.pending.lock() {
+            Ok(mut guard) => std::mem::take(&mut *guard),
+            Err(_) => Vec::new(),
+        }
+    }
+}
+
+/// Emit one deep-link routing event to the frontend. `deep-link-sync` carries
+/// no payload; the rest carry a string payload.
+fn emit_deep_link_event(app: &AppHandle, name: &str, payload: &Option<String>) {
+    match payload {
+        Some(p) => {
+            let _ = app.emit::<String>(name, p.clone());
+        }
+        None => {
+            let _ = app.emit::<()>(name, ());
+        }
+    }
 }
 
 /// (Re)start the auto-sync scheduler using the current `auto_sync_interval_minutes`.
@@ -215,6 +272,7 @@ pub fn run() {
                 db: Mutex::new(db),
                 settings: Mutex::new(settings),
                 tray: Mutex::new(None),
+                deep_links: DeepLinkBuffer::new(),
                 sync_stop: Mutex::new(None),
                 scheduler: Mutex::new(None),
                 scheduler_running: tokio::sync::Mutex::new(HashMap::new()),
@@ -316,18 +374,42 @@ pub fn run() {
             {
                 let app_handle_dpl = app_handle.clone();
                 app_handle.listen("deep-link://new-url", move |event| {
+                    // P1-1: wake the window FIRST — a deep link is an explicit
+                    // user intent to interact with the app, and emitting into a
+                    // hidden window was the ~50% failure mode.
+                    if let Some(window) = app_handle_dpl.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
                     if let Ok(urls) = serde_json::from_str::<Vec<String>>(event.payload()) {
+                        let state = app_handle_dpl.state::<AppState>();
                         for url_str in urls {
                             eprintln!("[deep-link] received {url_str}");
-                            let _ = app_handle_dpl.emit::<String>("deep-link", url_str.clone());
+                            let mut events = vec![("deep-link".to_string(), Some(url_str.clone()))];
                             if let Some(path) = url_str.strip_prefix("skillmint://") {
                                 if path == "sync" {
-                                    let _ = app_handle_dpl.emit::<()>("deep-link-sync", ());
+                                    events.push(("deep-link-sync".to_string(), None));
                                 } else if let Some(skill_name) = path.strip_prefix("open/skill/") {
-                                    let _ = app_handle_dpl.emit::<String>("deep-link-open-skill", skill_name.to_string());
+                                    events.push(("deep-link-open-skill".to_string(), Some(skill_name.to_string())));
+                                }
+                            }
+                            // P1-1: buffer until the frontend signals app-ready.
+                            for (name, payload) in events {
+                                for (n, p) in state.deep_links.push(&name, payload) {
+                                    emit_deep_link_event(&app_handle_dpl, &n, &p);
                                 }
                             }
                         }
+                    }
+                });
+
+                // P1-1: the frontend emits "app-ready" once its deep-link
+                // listeners are registered; replay anything buffered so far.
+                let app_handle_ready = app_handle.clone();
+                app_handle.listen("app-ready", move |_| {
+                    let state = app_handle_ready.state::<AppState>();
+                    for (name, payload) in state.deep_links.mark_ready() {
+                        emit_deep_link_event(&app_handle_ready, &name, &payload);
                     }
                 });
             }
