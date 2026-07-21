@@ -114,6 +114,11 @@ pub struct Settings {
     /// scan/import, on top of the built-in `scan::DEFAULT_SCAN_EXCLUSIONS`.
     #[serde(default)]
     pub scan_exclude_names: Vec<String>,
+    /// P2-1: after a successful import, auto `git add` + `git commit` in the
+    /// center repo (message lists the imported skills). Default off; only
+    /// fires when the center repo is already git-initialized.
+    #[serde(default)]
+    pub auto_commit_after_import: bool,
     #[serde(default)]
     pub skill_scope_mode: SkillScopeMode,
     #[serde(default = "default_project_skill_dir")]
@@ -336,6 +341,7 @@ impl Default for Settings {
             show_dock_icon: true,
             onboarding_completed: false,
             scan_exclude_names: Vec::new(),
+            auto_commit_after_import: false,
             skill_scope_mode: SkillScopeMode::Global,
             project_skill_dir_name: default_project_skill_dir(),
             remote_enabled: false,

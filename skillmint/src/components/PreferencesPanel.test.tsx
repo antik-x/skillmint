@@ -25,6 +25,7 @@ function resetStore() {
       show_dock_icon: true,
       onboarding_completed: true,
       skill_scope_mode: "global",
+      auto_commit_after_import: false,
       project_skill_dir_name: ".skillmint/skills",
       remote_enabled: false,
       theme: "system",

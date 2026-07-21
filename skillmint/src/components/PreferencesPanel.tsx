@@ -200,6 +200,7 @@ export default function PreferencesPanel() {
 }
 
 function VersionControlBlock() {
+  const { settings, setSettings } = useAppStore();
   const [snapshots, setSnapshots] = useState<SnapshotInfo[]>([]);
   const [commits, setCommits] = useState<GitCommit[]>([]);
   const [gitInited, setGitInited] = useState(false);
@@ -208,6 +209,25 @@ function VersionControlBlock() {
   const [creating, setCreating] = useState(false);
   const [restoring, setRestoring] = useState<string | null>(null);
   const [gitting, setGitting] = useState<string | null>(null);
+  const [togglingAutoCommit, setTogglingAutoCommit] = useState(false);
+
+  // P2-1: 导入后自动提交开关，立即落盘（不经「保存设置」按钮）。
+  const toggleAutoCommit = async (checked: boolean) => {
+    if (togglingAutoCommit) return;
+    setTogglingAutoCommit(true);
+    try {
+      const saved = await invoke<AppSettings>("save_settings", {
+        newSettings: { ...settings, auto_commit_after_import: checked },
+      });
+      setSettings(saved);
+      showSuccess(checked ? "已开启导入后自动提交" : "已关闭导入后自动提交");
+    } catch (err) {
+      const m = typeof err === "string" ? err : String(err);
+      showError(`保存失败：${m}`);
+    } finally {
+      setTogglingAutoCommit(false);
+    }
+  };
 
   const load = useCallback(async () => {
     try {
@@ -278,9 +298,14 @@ function VersionControlBlock() {
     if (!commitMsg.trim()) return;
     setGitting("commit");
     try {
-      await invoke("git_commit", { message: commitMsg.trim() });
+      // P2-1: 返回被跳过的内嵌 .git 目录（已写入 .gitignore，未形成 gitlink）。
+      const ignored = await invoke<string[]>("git_commit", { message: commitMsg.trim() });
       setCommitMsg("");
-      showSuccess("已提交");
+      if (ignored && ignored.length > 0) {
+        showError(`已跳过含内嵌 .git 的目录（已加入 .gitignore）：${ignored.join("、")}。如需纳入版本管理，请使用 git submodule。`);
+      } else {
+        showSuccess("已提交");
+      }
       await load();
     } catch (err) {
       const m = typeof err === "string" ? err : String(err);
@@ -368,6 +393,22 @@ function VersionControlBlock() {
           </div>
         ) : (
           <div className="space-y-3">
+            <div className="flex items-center justify-between rounded border border-[var(--border-subtle)] px-3 py-2">
+              <div className="text-xs text-secondary">
+                导入后自动提交
+                <div className="text-[11px] text-tertiary">
+                  导入 Skill 后自动 git 提交，提交信息包含导入清单；含内嵌 .git 的目录会被跳过并写入 .gitignore
+                </div>
+              </div>
+              <input
+                type="checkbox"
+                aria-label="导入后自动提交"
+                checked={settings.auto_commit_after_import}
+                disabled={togglingAutoCommit}
+                onChange={(e) => toggleAutoCommit(e.target.checked)}
+                className="h-4 w-4 accent-accent disabled:opacity-50"
+              />
+            </div>
             <div className="flex gap-2">
               <input
                 value={commitMsg}

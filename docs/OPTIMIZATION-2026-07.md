@@ -119,7 +119,7 @@
 
 ---
 
-## P2-1 git 集成：导入后自动提交 + 内嵌仓防护
+## P2-1 git 集成：导入后自动提交 + 内嵌仓防护 ✅ (2026-07-21)
 
 **现象**：app 有 `git_init_repo` / `git_commit`（commands.rs:5029/5048，底层 `run_git` 调系统 git），但导入 24 个目录后 center repo 留下一堆未跟踪文件，需手工提交；手工 `git add -A` 时 `archify`（内嵌 git 仓）会变成无效 gitlink，`marketplaces` 里也有内嵌 `.git`。
 

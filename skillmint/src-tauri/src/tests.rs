@@ -1214,6 +1214,130 @@ fn test_repair_pairs_renamed_skill_and_applies() {
     assert!(drift2.orphans.is_empty());
 }
 
+// ---- P2-1: git integration ----
+
+fn git_ok(repo: &std::path::Path, args: &[&str]) -> bool {
+    std::process::Command::new("git")
+        .current_dir(repo)
+        .args(args)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn git_out(repo: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .current_dir(repo)
+        .args(args)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Init a temp repo with a local identity; returns false when git is
+/// unavailable so tests can skip gracefully.
+fn init_test_repo(repo: &std::path::Path) -> bool {
+    std::fs::create_dir_all(repo).unwrap();
+    git_ok(repo, &["init"])
+        && git_ok(repo, &["config", "user.email", "test@example.com"])
+        && git_ok(repo, &["config", "user.name", "Test"])
+}
+
+#[test]
+fn test_git_stage_and_commit_ignores_embedded_git() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    if !init_test_repo(&repo) {
+        eprintln!("git unavailable, skipping");
+        return;
+    }
+
+    // A normal skill dir.
+    let normal = repo.join("normal-skill");
+    std::fs::create_dir_all(&normal).unwrap();
+    std::fs::write(normal.join("SKILL.md"), "# normal\n").unwrap();
+
+    // A dir with an embedded git repo (the archify incident shape).
+    let embedded = repo.join("archify");
+    std::fs::create_dir_all(&embedded).unwrap();
+    std::fs::write(embedded.join("SKILL.md"), "# embedded\n").unwrap();
+    assert!(git_ok(&embedded, &["init"]));
+
+    let ignored = crate::commands::git_stage_and_commit(&repo, "Import 2 skills: normal-skill, archify").unwrap();
+    assert_eq!(ignored, vec!["archify".to_string()]);
+
+    // .gitignore records the dir; it is NOT tracked (no gitlink).
+    let gi = std::fs::read_to_string(repo.join(".gitignore")).unwrap();
+    assert!(gi.contains("/archify/"), ".gitignore: {gi}");
+    let tracked = git_out(&repo, &["ls-files"]);
+    assert!(tracked.contains("normal-skill/SKILL.md"), "tracked: {tracked}");
+    assert!(!tracked.lines().any(|l| l.starts_with("archify")), "no gitlink: {tracked}");
+    assert!(tracked.contains(".gitignore"));
+
+    // The commit carries the import list message.
+    let subject = git_out(&repo, &["log", "-1", "--pretty=%s"]);
+    assert_eq!(subject, "Import 2 skills: normal-skill, archify");
+
+    // Idempotent: a second run ignores the same dir without duplicating rules.
+    let ignored2 = crate::commands::git_stage_and_commit(&repo, "mark").unwrap();
+    assert_eq!(ignored2, vec!["archify".to_string()]);
+    let gi2 = std::fs::read_to_string(repo.join(".gitignore")).unwrap();
+    assert_eq!(gi2.matches("/archify/").count(), 1);
+}
+
+#[test]
+fn test_git_init_repo_writes_ignore_template() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    if !git_ok(&repo, &["--version"]) {
+        eprintln!("git unavailable, skipping");
+        return;
+    }
+    crate::commands::git_init_repo_at(&repo).unwrap();
+    let gi = std::fs::read_to_string(repo.join(".gitignore")).unwrap();
+    for rule in [".DS_Store", "node_modules/", "__pycache__/", ".skillmint/"] {
+        assert!(gi.contains(rule), "missing {rule} in {gi}");
+    }
+}
+
+#[test]
+fn test_auto_commit_after_import_respects_switch_and_git_presence() {
+    // Default is OFF.
+    let mut settings = Settings::default();
+    assert!(!settings.auto_commit_after_import);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    settings.center_repo = repo.clone();
+
+    // Enabled but repo not git-initialized: nothing happens (and the repo is
+    // NOT initialized on our behalf).
+    settings.auto_commit_after_import = true;
+    crate::commands::maybe_auto_commit_after_import(&settings, &["a".to_string()]);
+    assert!(!repo.join(".git").exists());
+
+    // Disabled even with git present: no commit.
+    if !init_test_repo(&repo) {
+        eprintln!("git unavailable, skipping");
+        return;
+    }
+    settings.auto_commit_after_import = false;
+    std::fs::write(repo.join("one").with_extension("md"), "x").unwrap();
+    crate::commands::maybe_auto_commit_after_import(&settings, &["one".to_string()]);
+    assert!(git_out(&repo, &["log", "--oneline"]).is_empty(), "no commit when off");
+
+    // Enabled + git present: one commit listing the imported skills.
+    settings.auto_commit_after_import = true;
+    std::fs::write(repo.join("two").with_extension("md"), "y").unwrap();
+    crate::commands::maybe_auto_commit_after_import(
+        &settings,
+        &["one".to_string(), "two".to_string()],
+    );
+    let subject = git_out(&repo, &["log", "-1", "--pretty=%s"]);
+    assert_eq!(subject, "Import 2 skills: one, two");
+}
+
 /// P1-5: ambiguous pairing is reported unresolved, never guessed.
 #[test]
 #[cfg(unix)]
