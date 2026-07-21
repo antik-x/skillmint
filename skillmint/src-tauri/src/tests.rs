@@ -969,6 +969,197 @@ fn test_deep_link_buffer_replays_in_order_after_ready() {
     assert!(buf.mark_ready().is_empty(), "backlog stays drained");
 }
 
+/// P1-4: rename retargets the center dir, SKILL.md front matter, every
+/// agent-side link/dir, and the DB row (id preserved) in one go.
+#[test]
+#[cfg(unix)]
+fn test_rename_skill_retargets_center_agents_and_db() {
+    let (tmp, db, settings) = setup_test_env();
+
+    let skill_dir = settings.center_repo.join("old-skill");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: old-skill\ndescription: demo\n---\n\n# body\n",
+    )
+    .unwrap();
+    let now = current_timestamp();
+    let skill = Skill {
+        id: new_id(),
+        name: "old-skill".to_string(),
+        repo_path: skill_dir.clone(),
+        created_at: now,
+        updated_at: now,
+        status: crate::models::SkillStatus::Draft,
+    };
+    db.insert_skill(&skill).unwrap();
+
+    let cursor_dir = tmp.path().join("home").join(".cursor").join("skills");
+    let claude_dir = tmp.path().join("home").join(".claude").join("skills");
+    let codex_dir = tmp.path().join("home").join(".codex").join("skills");
+    for d in [&cursor_dir, &claude_dir, &codex_dir] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let cursor = insert_agent(&db, "Cursor", &cursor_dir);
+    let claude = insert_agent(&db, "Claude", &claude_dir);
+    let codex = insert_agent(&db, "Codex", &codex_dir);
+
+    let mk_target = |agent: &Agent, mode: SyncMode| SyncTarget {
+        id: new_id(),
+        skill_id: skill.id.clone(),
+        skill_name: Some(skill.name.clone()),
+        agent_id: agent.id.clone(),
+        agent_name: Some(agent.name.clone()),
+        mode,
+        last_sync_at: None,
+        status: SyncStatus::Synced,
+    };
+    let t_cursor = mk_target(&cursor, SyncMode::Symlink);
+    let t_claude = mk_target(&claude, SyncMode::Symlink);
+    let t_codex = mk_target(&codex, SyncMode::Copy);
+    for t in [&t_cursor, &t_claude, &t_codex] {
+        db.insert_sync_target(t).unwrap();
+    }
+    crate::sync::apply_sync_target(&t_cursor, &skill, &cursor).unwrap();
+    crate::sync::apply_sync_target(&t_claude, &skill, &claude).unwrap();
+    crate::sync::apply_sync_target(&t_codex, &skill, &codex).unwrap();
+
+    let renamed = crate::commands::rename_skill_impl(&db, &settings, "old-skill", "new-skill").unwrap();
+
+    // Center dir renamed, front matter rewritten, body preserved.
+    assert!(!skill_dir.exists());
+    let new_dir = settings.center_repo.join("new-skill");
+    assert!(new_dir.is_dir());
+    let md = std::fs::read_to_string(new_dir.join("SKILL.md")).unwrap();
+    assert!(md.contains("name: new-skill"), "front matter rewritten: {md}");
+    assert!(md.contains("# body"), "body preserved");
+
+    // DB: id preserved, name/path updated, cached target names refreshed,
+    // statuses recomputed to Synced.
+    assert_eq!(renamed.id, skill.id, "id preserved");
+    let row = db.get_skill_by_id(&skill.id).unwrap().unwrap();
+    assert_eq!(row.name, "new-skill");
+    assert_eq!(row.repo_path, new_dir);
+    assert!(db.get_skill_by_name("old-skill").unwrap().is_none());
+    let targets = db.get_sync_targets().unwrap();
+    assert_eq!(targets.len(), 3);
+    assert!(targets.iter().all(|t| t.skill_name.as_deref() == Some("new-skill")));
+    let status_of = |agent: &Agent| {
+        targets
+            .iter()
+            .find(|t| t.agent_id == agent.id)
+            .map(|t| t.status)
+            .unwrap()
+    };
+    assert_eq!(status_of(&cursor), SyncStatus::Synced);
+    assert_eq!(status_of(&claude), SyncStatus::Synced);
+    // Copy mode: the entity copy still carries the pre-rename front matter,
+    // so it honestly reads as a local change until the next sync.
+    assert_eq!(status_of(&codex), SyncStatus::LocalChanged);
+
+    // Agent sides retargeted; copy mode stays an entity dir.
+    assert!(cursor_dir.join("new-skill").is_symlink());
+    assert_eq!(resolve_symlink(&cursor_dir.join("new-skill")), new_dir);
+    assert!(claude_dir.join("new-skill").is_symlink());
+    let codex_copy = codex_dir.join("new-skill");
+    assert!(codex_copy.is_dir() && !codex_copy.is_symlink());
+    assert!(codex_copy.join("SKILL.md").exists());
+
+    // No old-name entries and no dangling links anywhere.
+    for d in [&cursor_dir, &claude_dir, &codex_dir] {
+        assert!(!d.join("old-skill").exists() && !d.join("old-skill").is_symlink());
+        for e in std::fs::read_dir(d).unwrap() {
+            let p = e.unwrap().path();
+            assert!(!crate::fs::is_broken_symlink(&p), "dangling: {}", p.display());
+        }
+    }
+}
+
+/// P1-4: every validation failure rejects without touching disk or DB.
+#[test]
+fn test_rename_skill_conflict_errors_change_nothing() {
+    let (_tmp, db, settings) = setup_test_env();
+    let skill = insert_skill(&db, &settings, "alpha", "---\nname: alpha\n---\n");
+    let _other = insert_skill(&db, &settings, "beta", "# beta\n");
+
+    assert!(crate::commands::rename_skill_impl(&db, &settings, "nope", "x").is_err());
+    assert!(crate::commands::rename_skill_impl(&db, &settings, "alpha", "alpha").is_err());
+    assert!(crate::commands::rename_skill_impl(&db, &settings, "alpha", "beta").is_err());
+    assert!(crate::commands::rename_skill_impl(&db, &settings, "alpha", "a/b").is_err());
+    assert!(crate::commands::rename_skill_impl(&db, &settings, "alpha", "").is_err());
+
+    // Unregistered center dir with the target name blocks the rename.
+    std::fs::create_dir_all(settings.center_repo.join("gamma")).unwrap();
+    assert!(crate::commands::rename_skill_impl(&db, &settings, "alpha", "gamma").is_err());
+
+    let row = db.get_skill_by_name("alpha").unwrap().unwrap();
+    assert_eq!(row.repo_path, skill.repo_path);
+    assert!(skill.repo_path.join("SKILL.md").exists());
+    assert!(!settings.center_repo.join("x").exists());
+}
+
+/// P1-4: a mid-operation failure rolls back the center rename, the front
+/// matter, and every completed agent-side mutation; the DB stays untouched.
+#[test]
+#[cfg(unix)]
+fn test_rename_skill_rolls_back_on_agent_failure() {
+    let (tmp, db, settings) = setup_test_env();
+    let skill = insert_skill(&db, &settings, "old-skill", "---\nname: old-skill\n---\n");
+
+    let cursor_dir = tmp.path().join("home").join(".cursor").join("skills");
+    let claude_dir = tmp.path().join("home").join(".claude").join("skills");
+    std::fs::create_dir_all(&cursor_dir).unwrap();
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    let cursor = insert_agent(&db, "Cursor", &cursor_dir);
+    let claude = insert_agent(&db, "Claude", &claude_dir);
+
+    for agent in [&cursor, &claude] {
+        let target = SyncTarget {
+            id: new_id(),
+            skill_id: skill.id.clone(),
+            skill_name: Some(skill.name.clone()),
+            agent_id: agent.id.clone(),
+            agent_name: Some(agent.name.clone()),
+            mode: SyncMode::Symlink,
+            last_sync_at: None,
+            status: SyncStatus::Synced,
+        };
+        db.insert_sync_target(&target).unwrap();
+        crate::sync::apply_sync_target(&target, &skill, agent).unwrap();
+    }
+
+    // Claude's dir becomes unwritable: its mutation fails after Cursor's
+    // already succeeded, forcing a rollback.
+    make_readonly(&claude_dir);
+    let result = crate::commands::rename_skill_impl(&db, &settings, "old-skill", "new-skill");
+    make_writable(&claude_dir);
+    assert!(result.is_err(), "rename must fail");
+
+    // Center renamed back, front matter restored.
+    assert!(skill.repo_path.is_dir());
+    assert!(!settings.center_repo.join("new-skill").exists());
+    let md = std::fs::read_to_string(skill.repo_path.join("SKILL.md")).unwrap();
+    assert!(md.contains("name: old-skill"), "front matter rolled back: {md}");
+
+    // Cursor's original link restored; claude's was never removed.
+    for d in [&cursor_dir, &claude_dir] {
+        let link = d.join("old-skill");
+        assert!(link.is_symlink(), "{} link restored", d.display());
+        assert_eq!(resolve_symlink(&link), skill.repo_path);
+        assert!(!d.join("new-skill").exists() && !d.join("new-skill").is_symlink());
+    }
+
+    // DB untouched.
+    let row = db.get_skill_by_name("old-skill").unwrap().unwrap();
+    assert_eq!(row.id, skill.id);
+    assert!(
+        db.get_sync_targets()
+            .unwrap()
+            .iter()
+            .all(|t| t.skill_name.as_deref() == Some("old-skill"))
+    );
+}
+
 #[test]
 fn test_check_repo_integrity_detects_missing_repo() {
     let (tmp, db, mut settings) = setup_test_env();

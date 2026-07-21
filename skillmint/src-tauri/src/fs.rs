@@ -153,6 +153,51 @@ pub fn is_symlink_to(path: &Path, target: &Path) -> bool {
     }
 }
 
+/// P1-4: rewrite the `name:` field of a SKILL.md YAML front matter from `old`
+/// to `new`. Only fires when the file has a front matter block AND the name
+/// exactly matches `old` (repo convention: directory name == front matter
+/// name). Returns true when the file was rewritten; every other line is
+/// preserved verbatim.
+pub fn rewrite_skill_md_name(skill_md: &Path, old: &str, new: &str) -> Result<bool> {
+    if !skill_md.is_file() {
+        return Ok(false);
+    }
+    let content = std::fs::read_to_string(skill_md)?;
+    let mut lines = content.lines();
+    if lines.next().map(str::trim_end) != Some("---") {
+        return Ok(false);
+    }
+    let mut out: Vec<String> = vec!["---".to_string()];
+    let mut in_front_matter = true;
+    let mut changed = false;
+    for line in lines {
+        let trimmed = line.trim_end();
+        if in_front_matter {
+            if trimmed == "---" {
+                in_front_matter = false;
+            } else if !changed {
+                if let Some(value) = trimmed.strip_prefix("name:") {
+                    let value = value.trim().trim_matches('"').trim_matches('\'');
+                    if value == old {
+                        out.push(format!("name: {}", new));
+                        changed = true;
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push(line.to_string());
+    }
+    if changed {
+        let mut body = out.join("\n");
+        if content.ends_with('\n') {
+            body.push('\n');
+        }
+        std::fs::write(skill_md, body)?;
+    }
+    Ok(changed)
+}
+
 /// Resolve symlink target, returning original path if not a symlink.
 pub fn resolve_symlink(path: &Path) -> PathBuf {
     if path.is_symlink() {

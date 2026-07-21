@@ -1985,12 +1985,27 @@ impl Db {
         Ok(())
     }
 
-    /// PRD-09: update the cached skill_name in sync_targets when a skill is renamed.
-    pub fn update_sync_target_skill_name(&self, skill_id: &str, skill_name: &str) -> Result<()> {
-        self.conn.execute(
-            "UPDATE sync_targets SET skill_name = ?1 WHERE skill_id = ?2",
-            params![skill_name, skill_id],
+    /// P1-4: rename a skill in ONE transaction — the row id is preserved so
+    /// FK references (kg_skill_nodes, sync_targets) stay intact. The
+    /// skill_name shown on sync targets comes from a JOIN with skills.name,
+    /// so this single UPDATE refreshes every display automatically.
+    pub fn rename_skill_tx(
+        &self,
+        skill_id: &str,
+        new_name: &str,
+        new_repo_path: &std::path::Path,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE skills SET name = ?1, repo_path = ?2, updated_at = ?3 WHERE id = ?4",
+            params![
+                new_name,
+                new_repo_path.to_string_lossy().to_string(),
+                now_secs(),
+                skill_id
+            ],
         )?;
+        tx.commit()?;
         Ok(())
     }
 

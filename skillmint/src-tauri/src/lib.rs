@@ -527,6 +527,7 @@ pub fn run() {
             commands::scan_agent_skills,
             commands::get_agent_skill_counts,
             commands::import_skill,
+            commands::rename_skill,
             commands::sync_all_command,
             commands::clear_collected_data,
             commands::reset_database,

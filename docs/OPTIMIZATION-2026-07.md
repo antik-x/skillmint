@@ -89,7 +89,7 @@
 
 ---
 
-## P1-4 官方 `rename_skill` 命令（本 session 的手工修复已验证 recipe）
+## P1-4 官方 `rename_skill` 命令（本 session 的手工修复已验证 recipe） ✅ (2026-07-21)
 
 **现象**：用户在 app 外重命名 skill 目录是真实场景（本次改了 9 个）。app 没有改名能力，结果是：DB 6 行记录指向不存在的旧路径、8 个 agent 目录里 60+ 条悬空旧名链、`kg_skill_nodes`/`sync_targets` 靠 id 的引用倒是没断（这是我们手工修复能成功的关键）。
 

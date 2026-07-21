@@ -19,7 +19,7 @@ use crate::models::{
     InstallRemoteResult, ProjectDetail, RepoIntegrity, ResolvedSkill, ResolveResult, RestoreResult,
     RestoreSummary, RollbackResult, SafetyScanResult, ScheduledTask, SearchResult, Skill, SkillBundle,
     SkillBundleItem, SkillContent, SkillProjectBinding, SkillRemoteMeta, SkillStatus, SkillVersion,
-    SnapshotInfo, Source, SourceType, SyncAllResult, SyncStatus, SyncTarget, TaskRun, TrashItem,
+    SnapshotInfo, Source, SourceType, SyncAllResult, SyncMode, SyncStatus, SyncTarget, TaskRun, TrashItem,
     TriggerSource, WeeklyReport,
 };
 use crate::remote;
@@ -848,6 +848,252 @@ pub fn import_skill(
     Ok(skill)
 }
 
+/// P1-4: rename a skill end-to-end — center directory, SKILL.md front matter,
+/// per-agent links/dirs, and the DB row (id preserved, single transaction).
+/// Follows the runbook in docs/OPTIMIZATION-2026-07.md 附 A.
+#[tauri::command]
+pub fn rename_skill(
+    old_name: String,
+    new_name: String,
+    state: State<'_, AppState>,
+) -> Result<Skill, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let settings = state.settings.lock().map_err(|e| e.to_string())?;
+    rename_skill_impl(&db, &settings, &old_name, &new_name).map_err(|e| e.to_string())
+}
+
+/// Undo record for one agent-side mutation performed during a rename.
+enum AgentUndo {
+    None,
+    /// Created `created` as a new symlink; undo removes it.
+    RemoveCreated { created: PathBuf },
+    /// Replaced an old symlink with `created`; undo removes `created` and
+    /// restores a link at `old_path` -> `old_target`.
+    RestoreLink {
+        created: PathBuf,
+        old_path: PathBuf,
+        old_target: PathBuf,
+    },
+    /// Renamed `original` to `current`; undo renames it back.
+    RenameBack { current: PathBuf, original: PathBuf },
+    /// Removed a stale symlink at `path` (-> `target`); undo recreates it.
+    RecreateLink { path: PathBuf, target: PathBuf },
+}
+
+/// Apply one agent-side rename mutation for sync target `mode`.
+/// Symlink targets get a fresh new-name link (entity dirs are moved, never
+/// deleted); copy targets only have their directory renamed.
+fn retarget_agent_entry(
+    mode: SyncMode,
+    agent_dir: &std::path::Path,
+    old_name: &str,
+    new_name: &str,
+    old_dir: &std::path::Path,
+    new_dir: &std::path::Path,
+) -> anyhow::Result<AgentUndo> {
+    let agent_old = agent_dir.join(old_name);
+    let agent_new = agent_dir.join(new_name);
+    match mode {
+        SyncMode::Symlink => {
+            if agent_old.is_symlink() {
+                remove_path(&agent_old)?;
+                if let Err(e) = crate::fs::create_symlink_strict(new_dir, &agent_new) {
+                    // The old link is already gone — restore it on the spot so
+                    // a failed rename never leaves the agent side worse off.
+                    #[cfg(unix)]
+                    let _ = std::os::unix::fs::symlink(old_dir, &agent_old);
+                    return Err(e);
+                }
+                Ok(AgentUndo::RestoreLink {
+                    created: agent_new,
+                    old_path: agent_old,
+                    old_target: old_dir.to_path_buf(),
+                })
+            } else if agent_old.is_dir() {
+                std::fs::rename(&agent_old, &agent_new)?;
+                Ok(AgentUndo::RenameBack {
+                    current: agent_new,
+                    original: agent_old,
+                })
+            } else {
+                // Nothing on disk: create the link the target implies.
+                crate::fs::create_symlink_strict(new_dir, &agent_new)?;
+                Ok(AgentUndo::RemoveCreated { created: agent_new })
+            }
+        }
+        SyncMode::Copy => {
+            if agent_old.is_symlink() {
+                // Stale link, dangling since the center rename; copy mode
+                // never creates links — drop it, the next sync copies fresh.
+                remove_path(&agent_old)?;
+                Ok(AgentUndo::RecreateLink {
+                    path: agent_old,
+                    target: old_dir.to_path_buf(),
+                })
+            } else if agent_old.is_dir() {
+                std::fs::rename(&agent_old, &agent_new)?;
+                Ok(AgentUndo::RenameBack {
+                    current: agent_new,
+                    original: agent_old,
+                })
+            } else {
+                Ok(AgentUndo::None)
+            }
+        }
+    }
+}
+
+#[allow(unused_variables)]
+fn undo_agent_op(undo: &AgentUndo) {
+    match undo {
+        AgentUndo::None => {}
+        AgentUndo::RemoveCreated { created } => {
+            let _ = remove_path(created);
+        }
+        AgentUndo::RestoreLink {
+            created,
+            old_path,
+            old_target,
+        } => {
+            let _ = remove_path(created);
+            #[cfg(unix)]
+            let _ = std::os::unix::fs::symlink(old_target, old_path);
+        }
+        AgentUndo::RenameBack { current, original } => {
+            let _ = std::fs::rename(current, original);
+        }
+        AgentUndo::RecreateLink { path, target } => {
+            #[cfg(unix)]
+            let _ = std::os::unix::fs::symlink(target, path);
+        }
+    }
+}
+
+/// Best-effort rollback of the center-side rename (directory + front matter).
+fn rollback_center_rename(
+    new_dir: &std::path::Path,
+    old_dir: &std::path::Path,
+    new_name: &str,
+    old_name: &str,
+) {
+    if new_dir.exists() && !old_dir.exists() {
+        let _ = std::fs::rename(new_dir, old_dir);
+        let skill_md = crate::fs::get_effective_skill_dir(old_dir, None).join("SKILL.md");
+        let _ = crate::fs::rewrite_skill_md_name(&skill_md, new_name, old_name);
+    }
+}
+
+pub(crate) fn rename_skill_impl(
+    db: &crate::db::Db,
+    settings: &Settings,
+    old_name: &str,
+    new_name: &str,
+) -> anyhow::Result<Skill> {
+    // ---------- validation: rejects before touching anything ----------
+    let new_name = new_name.trim();
+    anyhow::ensure!(!new_name.is_empty(), "新名称不能为空");
+    anyhow::ensure!(new_name != old_name, "新旧名称相同，无需改名");
+    anyhow::ensure!(
+        !new_name.contains('/') && !new_name.contains('\\') && new_name != "." && new_name != "..",
+        "新名称包含非法字符: {new_name}"
+    );
+    let skill = db
+        .get_skill_by_name(old_name)?
+        .ok_or_else(|| anyhow::anyhow!("Skill 不存在: {old_name}"))?;
+    anyhow::ensure!(
+        db.get_skill_by_name(new_name)?.is_none(),
+        "同名 Skill 已存在: {new_name}"
+    );
+    let old_dir = skill.repo_path.clone();
+    anyhow::ensure!(old_dir.is_dir(), "center 目录不存在: {}", old_dir.display());
+    let parent = old_dir
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| settings.center_repo.clone());
+    let new_dir = parent.join(new_name);
+    anyhow::ensure!(
+        !new_dir.exists() && !new_dir.is_symlink(),
+        "center 已存在同名目录: {}",
+        new_dir.display()
+    );
+
+    let targets: Vec<SyncTarget> = db
+        .get_sync_targets()?
+        .into_iter()
+        .filter(|t| t.skill_id == skill.id)
+        .collect();
+    let agents = db.get_agents()?;
+
+    // ---------- file operations, best-effort rollback on failure ----------
+    let mut undos: Vec<AgentUndo> = Vec::new();
+    let fs_result: anyhow::Result<()> = (|| {
+        std::fs::rename(&old_dir, &new_dir)?;
+        // Repo convention: directory name == SKILL.md front matter name.
+        let skill_md = crate::fs::get_effective_skill_dir(&new_dir, None).join("SKILL.md");
+        crate::fs::rewrite_skill_md_name(&skill_md, old_name, new_name)?;
+        for target in &targets {
+            let agent = match agents.iter().find(|a| a.id == target.agent_id) {
+                Some(a) => a,
+                None => continue,
+            };
+            let undo = retarget_agent_entry(
+                target.mode,
+                &agent.skill_directory,
+                old_name,
+                new_name,
+                &old_dir,
+                &new_dir,
+            )
+            .map_err(|e| anyhow::anyhow!("agent {}: {e}", agent.name))?;
+            undos.push(undo);
+        }
+        Ok(())
+    })();
+    if let Err(e) = fs_result {
+        for undo in undos.iter().rev() {
+            undo_agent_op(undo);
+        }
+        rollback_center_rename(&new_dir, &old_dir, new_name, old_name);
+        return Err(e.context("改名文件操作失败，已尽力回滚"));
+    }
+
+    // ---------- DB: single transaction, id preserved ----------
+    if let Err(e) = db.rename_skill_tx(&skill.id, new_name, &new_dir) {
+        for undo in undos.iter().rev() {
+            undo_agent_op(undo);
+        }
+        rollback_center_rename(&new_dir, &old_dir, new_name, old_name);
+        return Err(e.context("DB 改名事务失败，已回滚文件操作"));
+    }
+
+    // ---------- refresh sync statuses with the P0-1 evaluator ----------
+    let renamed_skill = Skill {
+        name: new_name.to_string(),
+        repo_path: new_dir.clone(),
+        ..skill.clone()
+    };
+    for target in &targets {
+        let agent = match agents.iter().find(|a| a.id == target.agent_id) {
+            Some(a) => a,
+            None => continue,
+        };
+        if let Ok(status) = crate::sync::evaluate_sync_target(target, &renamed_skill, agent) {
+            if status != target.status {
+                let _ = db.update_sync_target_status(&target.id, status);
+            }
+        }
+    }
+
+    let _ = invalidate_directory_skill_cache(db, None);
+
+    Ok(Skill {
+        name: new_name.to_string(),
+        repo_path: new_dir,
+        updated_at: current_timestamp(),
+        ..skill
+    })
+}
+
 #[tauri::command]
 pub fn add_skill(
     source_path: String,
@@ -1073,8 +1319,9 @@ pub fn save_skill_content(
         std::fs::rename(&skill.repo_path, &new_repo_path).map_err(|e| e.to_string())?;
         skill.repo_path = new_repo_path;
         skill.name = new_name.clone();
-        db.update_sync_target_skill_name(&skill_id, &new_name)
-            .map_err(|e| e.to_string())?;
+        // Note: sync_targets has no skill_name column — the name is derived
+        // from a JOIN with skills.name, so updating the skill row below is
+        // enough (P1-4 removed a broken update against that phantom column).
         // Re-create agent targets at the new name.
         let agents = db.get_agents().map_err(|e| e.to_string())?;
         let targets = db.get_sync_targets().map_err(|e| e.to_string())?;
