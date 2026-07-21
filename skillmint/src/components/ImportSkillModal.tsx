@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Bot, CheckCircle2, X, XCircle } from "lucide-react";
+import { Bot, CheckCircle2, ChevronDown, X, XCircle } from "lucide-react";
 import { showError, showSuccess } from "../stores/toastStore";
 import { useAppStore } from "../stores/appStore";
 import { Button } from "./ui/Button";
@@ -27,12 +27,17 @@ export default function ImportSkillModal({ agents, onClose, onImported }: Props)
   const [conflictChoices, setConflictChoices] = useState<ConflictChoices>({});
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
+  // P1-3: 自绘 combobox 状态（原生 <select> 在 AX 树里映射为 AXPopUpButton，
+  // 不响应任何合成输入，堵死 UI 自动化与端到端测试）。
+  const [agentMenuOpen, setAgentMenuOpen] = useState(false);
+  const [highlightedAgent, setHighlightedAgent] = useState(-1);
+  const agentMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (selectedAgent) {
       setLoading(true);
       invoke<AgentSkillItem[]>("scan_agent_skills", { agentId: selectedAgent })
-        .then(setItems)
+        .then((res) => setItems(res ?? []))
         .catch((err) => {
           const message =
             typeof err === "string" ? err : err instanceof Error ? err.message : String(err);
@@ -129,6 +134,59 @@ export default function ImportSkillModal({ agents, onClose, onImported }: Props)
     return result;
   }, [enabledAgents]);
 
+  // P1-3: 自绘 combobox——普通 button + listbox，AXPress/合成点击/键盘均可操作。
+  const selectedAgentObj = dedupedAgents.find((a) => a.id === selectedAgent) ?? null;
+
+  const openAgentMenu = () => {
+    setHighlightedAgent(Math.max(0, dedupedAgents.findIndex((a) => a.id === selectedAgent)));
+    setAgentMenuOpen(true);
+  };
+
+  const chooseAgent = (id: string) => {
+    setSelectedAgent(id);
+    setAgentMenuOpen(false);
+  };
+
+  const onAgentButtonKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") {
+      setAgentMenuOpen(false);
+      return;
+    }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!agentMenuOpen) {
+        openAgentMenu();
+        return;
+      }
+      const delta = e.key === "ArrowDown" ? 1 : -1;
+      setHighlightedAgent((prev) =>
+        Math.min(dedupedAgents.length - 1, Math.max(0, prev + delta)),
+      );
+      return;
+    }
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      if (agentMenuOpen) {
+        const target = dedupedAgents[highlightedAgent];
+        if (target) chooseAgent(target.id);
+      } else {
+        openAgentMenu();
+      }
+    }
+  };
+
+  // 点击组件外部时收起列表。
+  useEffect(() => {
+    if (!agentMenuOpen) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (agentMenuRef.current && !agentMenuRef.current.contains(e.target as Node)) {
+        setAgentMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [agentMenuOpen]);
+
   const canImport =
     selectedItems.size > 0 &&
     !Array.from(selectedItems).some((name) => {
@@ -150,22 +208,53 @@ export default function ImportSkillModal({ agents, onClose, onImported }: Props)
         </div>
 
         <div className="mb-4">
-          <label className="mb-2 block text-sm font-medium text-secondary">选择 Agent</label>
-          <div className="relative">
-            <select
-              value={selectedAgent}
-              onChange={(e) => setSelectedAgent(e.target.value)}
+          <label
+            id="import-agent-label"
+            className="mb-2 block text-sm font-medium text-secondary"
+          >
+            选择 Agent
+          </label>
+          <div className="relative" ref={agentMenuRef}>
+            <button
+              type="button"
+              aria-labelledby="import-agent-label"
+              aria-haspopup="listbox"
+              aria-expanded={agentMenuOpen}
               disabled={importing}
-              className="w-full appearance-none rounded-lg border border-[var(--border-prominent)] bg-primary px-4 py-2 pr-10 text-sm text-primary focus:border-accent focus:outline-none disabled:opacity-50"
+              onClick={() => (agentMenuOpen ? setAgentMenuOpen(false) : openAgentMenu())}
+              onKeyDown={onAgentButtonKeyDown}
+              className="w-full rounded-lg border border-[var(--border-prominent)] bg-primary px-4 py-2 pr-10 text-left text-sm text-primary focus:border-accent focus:outline-none disabled:opacity-50"
             >
-              <option value="">请选择…</option>
-              {dedupedAgents.map((agent) => (
-                <option key={agent.id} value={agent.id}>
-                  {agentDisplayName(agent, dedupedAgents)}
-                </option>
-              ))}
-            </select>
-            <Bot className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-tertiary" />
+              <span className={selectedAgentObj ? "" : "text-tertiary"}>
+                {selectedAgentObj ? agentDisplayName(selectedAgentObj, dedupedAgents) : "请选择…"}
+              </span>
+              <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-tertiary" />
+            </button>
+            {agentMenuOpen && (
+              <ul
+                role="listbox"
+                aria-labelledby="import-agent-label"
+                className="absolute z-10 mt-1 max-h-56 w-full overflow-auto rounded-lg border border-[var(--border-subtle)] bg-primary py-1 shadow-xl"
+              >
+                {dedupedAgents.map((agent, idx) => (
+                  <li
+                    key={agent.id}
+                    role="option"
+                    aria-selected={agent.id === selectedAgent}
+                    onClick={() => chooseAgent(agent.id)}
+                    onMouseEnter={() => setHighlightedAgent(idx)}
+                    className={`flex cursor-pointer items-center gap-2 px-4 py-2 text-sm ${
+                      idx === highlightedAgent
+                        ? "bg-accent/15 text-primary"
+                        : "text-secondary hover:bg-tertiary/60"
+                    }`}
+                  >
+                    <Bot className="h-4 w-4 shrink-0 text-tertiary" />
+                    {agentDisplayName(agent, dedupedAgents)}
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </div>
 

@@ -23,10 +23,14 @@ function buildSameDirAgents(n: number, dir: string): Agent[] {
   }));
 }
 
-function getAgentSelect(): HTMLSelectElement {
-  // 下拉区由 label「选择 Agent」标注；label 元素后紧跟 select。
-  const container = screen.getByText("选择 Agent").closest("div")!;
-  return container.querySelector("select") as HTMLSelectElement;
+// P1-3: 自绘 combobox——label「选择 Agent」经 aria-labelledby 标注触发按钮。
+function getAgentCombobox(): HTMLElement {
+  return screen.getByRole("button", { name: "选择 Agent" });
+}
+
+async function chooseAgentOption(name: string | RegExp) {
+  await userEvent.click(getAgentCombobox());
+  await userEvent.click(await screen.findByRole("option", { name }));
 }
 
 describe("SPEC-F6 T1: ImportSkillModal 按目录去重", () => {
@@ -38,13 +42,21 @@ describe("SPEC-F6 T1: ImportSkillModal 按目录去重", () => {
   it("27 个同目录 Agent → 下拉仅出现 1 个选项（去重后）", async () => {
     const dir = "/home/u/.skillmint/skills";
     const agents = buildSameDirAgents(27, dir);
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === "scan_agent_skills") return Promise.resolve([]);
+      return Promise.resolve(undefined);
+    });
     render(<ImportSkillModal agents={agents} onClose={() => {}} onImported={() => {}} />);
 
-    const select = getAgentSelect();
-    // 1 个占位「请选择…」+ 1 个去重后的代表项 = 共 2 个 option。
-    expect(select.options.length).toBe(2);
-    // 代表项的 value 指向第一个 Agent（去重保留首个）。
-    expect(select.options[1].value).toBe("agent-0");
+    await userEvent.click(getAgentCombobox());
+    const options = await screen.findAllByRole("option");
+    expect(options.length).toBe(1);
+
+    // 代表项指向第一个 Agent（去重保留首个）。
+    await userEvent.click(options[0]);
+    await waitFor(() =>
+      expect(vi.mocked(invoke)).toHaveBeenCalledWith("scan_agent_skills", { agentId: "agent-0" }),
+    );
   });
 
   it("不同目录的 Agent 各自保留为独立选项", async () => {
@@ -54,11 +66,11 @@ describe("SPEC-F6 T1: ImportSkillModal 按目录去重", () => {
     ];
     render(<ImportSkillModal agents={agents} onClose={() => {}} onImported={() => {}} />);
 
-    const select = getAgentSelect();
-    // 占位 + 2 个独立 Agent。
-    expect(select.options.length).toBe(3);
-    expect(select.options[1].value).toBe("a1");
-    expect(select.options[2].value).toBe("a2");
+    await userEvent.click(getAgentCombobox());
+    const options = await screen.findAllByRole("option");
+    expect(options.length).toBe(2);
+    expect(options[0]).toHaveTextContent("claude");
+    expect(options[1]).toHaveTextContent("cursor");
   });
 
   it("选择 Agent 后加载技能并导入成功", async () => {
@@ -85,8 +97,7 @@ describe("SPEC-F6 T1: ImportSkillModal 按目录去重", () => {
 
     render(<ImportSkillModal agents={agents} onClose={onClose} onImported={onImported} />);
 
-    const select = getAgentSelect();
-    await userEvent.selectOptions(select, "a1");
+    await chooseAgentOption("claude");
     await waitFor(() => expect(screen.getByText("weekly-report")).toBeInTheDocument());
 
     await userEvent.click(screen.getByText("weekly-report"));
@@ -130,8 +141,7 @@ describe("SPEC-F6 T1: ImportSkillModal 按目录去重", () => {
       </>,
     );
 
-    const select = getAgentSelect();
-    await userEvent.selectOptions(select, "a1");
+    await chooseAgentOption("claude");
     await waitFor(() => expect(screen.getByText("weekly-report")).toBeInTheDocument());
     await userEvent.click(screen.getByText("weekly-report"));
     await userEvent.click(screen.getByRole("button", { name: /导入 1 个/ }));
@@ -170,8 +180,7 @@ describe("P0-2: 软链条目标注「与中心一致」而非「内容冲突」"
     });
 
     render(<ImportSkillModal agents={agents} onClose={() => {}} onImported={() => {}} />);
-    const select = getAgentSelect();
-    await userEvent.selectOptions(select, "a1");
+    await chooseAgentOption("claude");
     await waitFor(() => expect(screen.getByText("whyactions-seo")).toBeInTheDocument());
 
     expect(screen.getByText("与中心一致")).toBeInTheDocument();
@@ -203,8 +212,7 @@ describe("P0-2: 软链条目标注「与中心一致」而非「内容冲突」"
     });
 
     render(<ImportSkillModal agents={agents} onClose={() => {}} onImported={() => {}} />);
-    const select = getAgentSelect();
-    await userEvent.selectOptions(select, "a1");
+    await chooseAgentOption("claude");
     await waitFor(() => expect(screen.getByText("forked-skill")).toBeInTheDocument());
 
     await userEvent.click(screen.getByRole("checkbox", { name: /forked-skill/ }));
@@ -235,8 +243,7 @@ describe("P0-3: 批量选择按钮", () => {
     });
 
     render(<ImportSkillModal agents={agents} onClose={() => {}} onImported={() => {}} />);
-    const select = getAgentSelect();
-    await userEvent.selectOptions(select, "a1");
+    await chooseAgentOption("claude");
     await waitFor(() => expect(screen.getByText("new-skill")).toBeInTheDocument());
 
     const newBox = screen.getByRole("checkbox", { name: /new-skill/ });
@@ -260,5 +267,78 @@ describe("P0-3: 批量选择按钮", () => {
     await userEvent.click(screen.getByText("清空"));
     expect(newBox).not.toBeChecked();
     expect(screen.getByText("已选 0 / 3")).toBeInTheDocument();
+  });
+});
+
+// P1-3: 自绘 combobox 的键盘与合成事件可达性——原生 <select> 的
+// AXPopUpButton 不响应合成输入，这里全部走普通 button + listbox。
+describe("P1-3: Agent combobox 键盘与合成事件", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockClear();
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === "scan_agent_skills") return Promise.resolve([]);
+      return Promise.resolve(undefined);
+    });
+  });
+
+  const twoAgents: Agent[] = [
+    { id: "a1", name: "claude", skill_directory: "/x/.claude/skills", is_enabled: true, source: "claude-code" },
+    { id: "a2", name: "cursor", skill_directory: "/y/.cursor/rules", is_enabled: true, source: "cursor" },
+  ];
+
+  it("Esc 关闭；Enter 展开；上下键导航；Enter 选定", async () => {
+    render(<ImportSkillModal agents={twoAgents} onClose={() => {}} onImported={() => {}} />);
+
+    // 合成点击展开（AXPress 等价路径）。
+    await userEvent.click(getAgentCombobox());
+    expect(await screen.findByRole("listbox")).toBeInTheDocument();
+
+    // Esc 关闭。
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+
+    // Enter 展开（焦点仍在按钮上），默认高亮第一项；ArrowDown 移到第二项；Enter 选定。
+    getAgentCombobox().focus();
+    await userEvent.keyboard("{Enter}");
+    expect(await screen.findByRole("listbox")).toBeInTheDocument();
+    await userEvent.keyboard("{ArrowDown}");
+    await userEvent.keyboard("{Enter}");
+
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(getAgentCombobox()).toHaveTextContent("cursor");
+    await waitFor(() =>
+      expect(vi.mocked(invoke)).toHaveBeenCalledWith("scan_agent_skills", { agentId: "a2" }),
+    );
+  });
+
+  it("全链路：选 agent → 渲染扫描结果 → 勾选 → 导入计数变化", async () => {
+    const agents: Agent[] = [
+      { id: "a1", name: "claude", skill_directory: "/x/.claude/skills", is_enabled: true, source: "claude-code" },
+    ];
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === "scan_agent_skills") {
+        return Promise.resolve([
+          { name: "alpha", exists_in_center: false },
+          { name: "beta", exists_in_center: false },
+        ]);
+      }
+      if (cmd === "import_skill") {
+        return Promise.resolve({ id: "s1", name: "alpha", repo_path: "/r/alpha", created_at: 0, updated_at: 0, status: "draft" });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    render(<ImportSkillModal agents={agents} onClose={() => {}} onImported={() => {}} />);
+
+    // 初始：无勾选，导入按钮计数为 0。
+    expect(screen.getByRole("button", { name: /导入 0 个/ })).toBeDisabled();
+
+    await chooseAgentOption("claude");
+    await waitFor(() => expect(screen.getByText("alpha")).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole("checkbox", { name: /alpha/ }));
+    expect(screen.getByRole("button", { name: /导入 1 个/ })).toBeEnabled();
+    await userEvent.click(screen.getByRole("checkbox", { name: /beta/ }));
+    expect(screen.getByRole("button", { name: /导入 2 个/ })).toBeEnabled();
   });
 });
