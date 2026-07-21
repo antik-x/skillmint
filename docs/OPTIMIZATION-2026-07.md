@@ -36,7 +36,7 @@
 
 ---
 
-## P0-3 扫描/导入过滤：非 skill 目录不得出现
+## P0-3 扫描/导入过滤：非 skill 目录不得出现 ✅ (2026-07-21)
 
 **现象**：`~/.agents/skills` 下的 `cache`、`data`、`marketplaces`（分别是指向 `~/.skillmint/cache|data|marketplaces` 的软链，均非 skill）在导入列表里显示为「新 Skill」，用户勾上后 `marketplaces`（8.6MB、含内嵌 `.git` 的插件市场镜像）被当作 skill 拷进 center 并登记，事后只能手工回滚。
 

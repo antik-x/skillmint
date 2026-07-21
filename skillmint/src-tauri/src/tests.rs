@@ -827,6 +827,120 @@ fn test_scan_directory_skills_symlink_to_center_reports_match() {
     );
 }
 
+/// P0-3: dirs without SKILL.md, symlinks to non-skill dirs, and excluded
+/// names must never appear in scan results.
+#[test]
+#[cfg(unix)]
+fn test_scan_directory_skills_filters_non_skills() {
+    let (tmp, db, settings) = setup_test_env();
+
+    let agent_dir = tmp.path().join("home").join(".cursor").join("skills");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    let agent = insert_agent(&db, "Cursor", &agent_dir);
+
+    // A real skill -> listed.
+    create_agent_skill(&agent_dir, "real-skill", "# Real\n");
+
+    // Dir without SKILL.md -> filtered.
+    std::fs::create_dir_all(agent_dir.join("random-dir")).unwrap();
+
+    // Symlink to a dir without SKILL.md -> filtered.
+    let non_skill = tmp.path().join("support-data");
+    std::fs::create_dir_all(&non_skill).unwrap();
+    std::fs::write(non_skill.join("blob.bin"), "x").unwrap();
+    std::os::unix::fs::symlink(&non_skill, agent_dir.join("data-link")).unwrap();
+
+    // Excluded built-in names, even with SKILL.md present -> filtered.
+    for name in ["cache", "data", "marketplaces", "node_modules", ".git", ".trash"] {
+        create_agent_skill(&agent_dir, name, "# not a skill\n");
+    }
+
+    // User-configured extra exclusion via settings.
+    create_agent_skill(&agent_dir, "scratch", "# scratch\n");
+    let mut settings = settings;
+    settings.scan_exclude_names = vec!["scratch".to_string()];
+
+    let mut db = db;
+    let items = crate::commands::scan_directory_skills_inner(
+        &mut db,
+        &settings,
+        &agent.id,
+        agent_dir.to_str().unwrap(),
+        true,
+    )
+    .unwrap();
+
+    assert_eq!(items.len(), 1, "only the real skill may survive: {:?}", items);
+    assert_eq!(items[0].name, "real-skill");
+}
+
+/// P0-3: the startup auto-import must apply the same filter — support dirs
+/// (cache/data/marketplaces) and SKILL.md-less dirs are never imported.
+#[test]
+#[cfg(unix)]
+fn test_import_all_agent_skills_skips_non_skills() {
+    let (tmp, db, settings) = setup_test_env();
+
+    let agent_dir = tmp.path().join("home").join(".agents").join("skills");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    let _agent = insert_agent(&db, "Kimi Code", &agent_dir);
+
+    create_agent_skill(&agent_dir, "real-skill", "# Real\n");
+    std::fs::create_dir_all(agent_dir.join("random-dir")).unwrap();
+    // marketplaces mirror with embedded .git — the incident case.
+    create_agent_skill(&agent_dir, "marketplaces", "# mirror\n");
+    std::fs::create_dir_all(agent_dir.join("marketplaces").join(".git")).unwrap();
+    let cache_dir = tmp.path().join("cache-target");
+    std::fs::create_dir_all(&cache_dir).unwrap();
+    std::os::unix::fs::symlink(&cache_dir, agent_dir.join("cache")).unwrap();
+
+    let (imported, _conflicts) = crate::commands::import_all_agent_skills(&db, &settings).unwrap();
+
+    assert_eq!(imported, 1);
+    let skills = db.get_skills().unwrap();
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0].name, "real-skill");
+    assert!(settings.center_repo.join("real-skill").join("SKILL.md").exists());
+    assert!(!settings.center_repo.join("marketplaces").exists());
+    assert!(!settings.center_repo.join("random-dir").exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn test_is_skill_dir_requires_skill_md() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    let skill = tmp.path().join("skill");
+    std::fs::create_dir_all(&skill).unwrap();
+    assert!(!crate::scan::is_skill_dir(&skill), "no SKILL.md yet");
+    std::fs::write(skill.join("SKILL.md"), "# S\n").unwrap();
+    assert!(crate::scan::is_skill_dir(&skill));
+
+    // Symlink to a skill dir resolves through.
+    let link = tmp.path().join("skill-link");
+    std::os::unix::fs::symlink(&skill, &link).unwrap();
+    assert!(crate::scan::is_skill_dir(&link));
+
+    // Symlink to a non-skill dir does not.
+    let plain = tmp.path().join("plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    let plain_link = tmp.path().join("plain-link");
+    std::os::unix::fs::symlink(&plain, &plain_link).unwrap();
+    assert!(!crate::scan::is_skill_dir(&plain_link));
+
+    // Broken symlink / plain file are not skill dirs.
+    let broken = tmp.path().join("broken");
+    std::os::unix::fs::symlink(tmp.path().join("gone"), &broken).unwrap();
+    assert!(!crate::scan::is_skill_dir(&broken));
+
+    // Exclusion list: built-ins + user extras.
+    assert!(crate::scan::is_excluded_scan_name("marketplaces", &[]));
+    assert!(crate::scan::is_excluded_scan_name(".git", &[]));
+    assert!(!crate::scan::is_excluded_scan_name("weekly-report", &[]));
+    let extra = vec!["scratch".to_string()];
+    assert!(crate::scan::is_excluded_scan_name("scratch", &extra));
+}
+
 #[test]
 fn test_check_repo_integrity_detects_missing_repo() {
     let (tmp, db, mut settings) = setup_test_env();

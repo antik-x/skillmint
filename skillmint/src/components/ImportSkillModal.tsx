@@ -57,6 +57,12 @@ export default function ImportSkillModal({ agents, onClose, onImported }: Props)
     });
   };
 
+  // P0-3: 批量选择（真实痛点：用户曾手动勾了 25 个框）。
+  const selectAllItems = () => setSelectedItems(new Set(items.map((i) => i.name)));
+  const selectNewItemsOnly = () =>
+    setSelectedItems(new Set(items.filter((i) => !i.exists_in_center).map((i) => i.name)));
+  const clearSelection = () => setSelectedItems(new Set());
+
   const setConflictChoice = (name: string, choice: "center" | "local") => {
     setConflictChoices((prev) => ({ ...prev, [name]: choice }));
   };
@@ -163,6 +169,34 @@ export default function ImportSkillModal({ agents, onClose, onImported }: Props)
           </div>
         </div>
 
+        {!loading && items.length > 0 && (
+          <div className="mb-2 flex items-center gap-2 text-xs">
+            <span className="text-tertiary">批量：</span>
+            <button
+              onClick={selectAllItems}
+              disabled={importing}
+              className="rounded-md bg-tertiary px-2.5 py-1 font-medium text-primary hover:bg-[var(--border-subtle)] disabled:opacity-50"
+            >
+              全选
+            </button>
+            <button
+              onClick={selectNewItemsOnly}
+              disabled={importing}
+              className="rounded-md bg-tertiary px-2.5 py-1 font-medium text-primary hover:bg-[var(--border-subtle)] disabled:opacity-50"
+            >
+              仅选&ldquo;新 Skill&rdquo;
+            </button>
+            <button
+              onClick={clearSelection}
+              disabled={importing}
+              className="rounded-md bg-tertiary px-2.5 py-1 font-medium text-primary hover:bg-[var(--border-subtle)] disabled:opacity-50"
+            >
+              清空
+            </button>
+            <span className="ml-auto text-tertiary">已选 {selectedItems.size} / {items.length}</span>
+          </div>
+        )}
+
         <div className="mb-4 max-h-80 overflow-auto rounded-xl border border-[var(--border-subtle)]">
           {loading ? (
             <SkeletonList count={4} />
@@ -170,8 +204,7 @@ export default function ImportSkillModal({ agents, onClose, onImported }: Props)
             <div className="p-6 text-center text-sm text-secondary">
               {selectedAgent ? "该 Agent 目录下没有发现 Skill。" : "请先选择一个 Agent。"}
             </div>
-          ) : (
-            <ul className="divide-y divide-[var(--divider)]">
+          ) : (<ul className="divide-y divide-[var(--divider)]">
               {items.map((item) => {
                 const isConflict = item.exists_in_center && item.content_match === false;
                 const isSame = item.exists_in_center && item.content_match === true;

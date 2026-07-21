@@ -110,6 +110,10 @@ pub struct Settings {
     pub show_dock_icon: bool,
     #[serde(default)]
     pub onboarding_completed: bool,
+    /// P0-3: user-configured extra directory names excluded from skill
+    /// scan/import, on top of the built-in `scan::DEFAULT_SCAN_EXCLUSIONS`.
+    #[serde(default)]
+    pub scan_exclude_names: Vec<String>,
     #[serde(default)]
     pub skill_scope_mode: SkillScopeMode,
     #[serde(default = "default_project_skill_dir")]
@@ -331,6 +335,7 @@ impl Default for Settings {
             launch_at_login: false,
             show_dock_icon: true,
             onboarding_completed: false,
+            scan_exclude_names: Vec::new(),
             skill_scope_mode: SkillScopeMode::Global,
             project_skill_dir_name: default_project_skill_dir(),
             remote_enabled: false,

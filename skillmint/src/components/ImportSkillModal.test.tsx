@@ -212,3 +212,53 @@ describe("P0-2: 软链条目标注「与中心一致」而非「内容冲突」"
     expect(screen.getByText("保留中心")).toBeInTheDocument();
   });
 });
+
+// P0-3: 批量操作——全选 / 仅选"新 Skill" / 清空（痛点：手动勾 25 个框）。
+describe("P0-3: 批量选择按钮", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockClear();
+  });
+
+  it("全选选中全部；仅选新 Skill 只留未入库项；清空归零", async () => {
+    const agents: Agent[] = [
+      { id: "a1", name: "claude", skill_directory: "/x/.claude/skills", is_enabled: true, source: "claude-code" },
+    ];
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === "scan_agent_skills") {
+        return Promise.resolve([
+          { name: "new-skill", exists_in_center: false },
+          { name: "synced-skill", exists_in_center: true, content_match: true },
+          { name: "conflict-skill", exists_in_center: true, content_match: false },
+        ]);
+      }
+      return Promise.resolve(undefined);
+    });
+
+    render(<ImportSkillModal agents={agents} onClose={() => {}} onImported={() => {}} />);
+    const select = getAgentSelect();
+    await userEvent.selectOptions(select, "a1");
+    await waitFor(() => expect(screen.getByText("new-skill")).toBeInTheDocument());
+
+    const newBox = screen.getByRole("checkbox", { name: /new-skill/ });
+    const syncedBox = screen.getByRole("checkbox", { name: /synced-skill/ });
+    const conflictBox = screen.getByRole("checkbox", { name: /conflict-skill/ });
+
+    // 全选
+    await userEvent.click(screen.getByText("全选"));
+    expect(newBox).toBeChecked();
+    expect(syncedBox).toBeChecked();
+    expect(conflictBox).toBeChecked();
+    expect(screen.getByText("已选 3 / 3")).toBeInTheDocument();
+
+    // 仅选"新 Skill"
+    await userEvent.click(screen.getByText(/仅选/));
+    expect(newBox).toBeChecked();
+    expect(syncedBox).not.toBeChecked();
+    expect(conflictBox).not.toBeChecked();
+
+    // 清空
+    await userEvent.click(screen.getByText("清空"));
+    expect(newBox).not.toBeChecked();
+    expect(screen.getByText("已选 0 / 3")).toBeInTheDocument();
+  });
+});

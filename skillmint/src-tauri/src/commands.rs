@@ -435,14 +435,15 @@ pub(crate) fn import_all_agent_skills(
         if let Ok(entries) = std::fs::read_dir(&agent.skill_directory) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if !path.is_dir() {
-                    continue;
-                }
                 let name = path
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
-                if name.is_empty() {
+                // P0-3: only real skills (SKILL.md present), never excluded names.
+                if name.is_empty()
+                    || crate::scan::is_excluded_scan_name(&name, &settings.scan_exclude_names)
+                    || !crate::scan::is_skill_dir(&path)
+                {
                     continue;
                 }
 
@@ -605,23 +606,25 @@ pub fn scan_agent_skills(
     if let Ok(entries) = std::fs::read_dir(&agent.skill_directory) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
-                let name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                if name.is_empty() {
-                    continue;
-                }
-                let center_path = settings.center_repo.join(&name);
-                let (exists, content_match) = classify_agent_skill_entry(&path, &center_path);
-                items.push(AgentSkillItem {
-                    name,
-                    exists_in_center: exists,
-                    content_match,
-                });
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            // P0-3: only real skills (SKILL.md present), never excluded names.
+            if name.is_empty()
+                || crate::scan::is_excluded_scan_name(&name, &settings.scan_exclude_names)
+                || !crate::scan::is_skill_dir(&path)
+            {
+                continue;
             }
+            let center_path = settings.center_repo.join(&name);
+            let (exists, content_match) = classify_agent_skill_entry(&path, &center_path);
+            items.push(AgentSkillItem {
+                name,
+                exists_in_center: exists,
+                content_match,
+            });
         }
     }
 
@@ -697,23 +700,25 @@ pub(crate) fn scan_directory_skills_inner(
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
             let p = entry.path();
-            if p.is_dir() {
-                let name = p
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                if name.is_empty() {
-                    continue;
-                }
-                let center_path = settings.center_repo.join(&name);
-                let (exists, content_match) = classify_agent_skill_entry(&p, &center_path);
-                items.push(AgentSkillItem {
-                    name,
-                    exists_in_center: exists,
-                    content_match,
-                });
+            let name = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            // P0-3: only real skills (SKILL.md present), never excluded names.
+            if name.is_empty()
+                || crate::scan::is_excluded_scan_name(&name, &settings.scan_exclude_names)
+                || !crate::scan::is_skill_dir(&p)
+            {
+                continue;
             }
+            let center_path = settings.center_repo.join(&name);
+            let (exists, content_match) = classify_agent_skill_entry(&p, &center_path);
+            items.push(AgentSkillItem {
+                name,
+                exists_in_center: exists,
+                content_match,
+            });
         }
     }
 

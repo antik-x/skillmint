@@ -43,6 +43,33 @@ pub fn expand_path(path: &str) -> PathBuf {
     }
 }
 
+/// P0-3: directory names that are never skills, regardless of content
+/// (e.g. `~/.agents/skills/{cache,data,marketplaces}` are symlinked support
+/// dirs, and `marketplaces` carries an embedded .git mirror — importing it as
+/// a skill was the incident behind this exclusion list).
+pub const DEFAULT_SCAN_EXCLUSIONS: &[&str] = &[
+    "cache",
+    "data",
+    "marketplaces",
+    "node_modules",
+    ".git",
+    ".trash",
+];
+
+/// P0-3: a directory entry only counts as a skill when it — or, for a
+/// symlink, its resolved target — contains a `SKILL.md`. `Path::is_dir` and
+/// the joined `is_file` both follow symlinks, so broken links and links to
+/// non-skill dirs correctly fail the check.
+pub fn is_skill_dir(path: &std::path::Path) -> bool {
+    path.is_dir() && path.join("SKILL.md").is_file()
+}
+
+/// P0-3: name-based scan/import exclusion. `extra` carries user-configured
+/// additions from `Settings::scan_exclude_names`.
+pub fn is_excluded_scan_name(name: &str, extra: &[String]) -> bool {
+    DEFAULT_SCAN_EXCLUSIONS.contains(&name) || extra.iter().any(|n| n == name)
+}
+
 /// Canonical agent id for a tool name (PRD-06: stable, directory-independent slug).
 fn agent_id_for(name: &str) -> String {
     format!("agent-{}", name.to_lowercase().replace(' ', "-"))
