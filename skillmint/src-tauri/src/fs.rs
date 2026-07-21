@@ -7,6 +7,11 @@ use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
 /// Create symlink on Unix; fallback to copy on error.
+///
+/// The silent copy fallback is intended for project-level diff resolution
+/// (`resolve_skill_diff`) and install/binding paths. The center<->agent sync
+/// engine uses [`create_symlink_strict`] instead, so a symlink failure is
+/// reported rather than quietly materializing a full copy (P0-1).
 pub fn create_symlink_or_copy(src: &Path, dst: &Path) -> Result<()> {
     #[cfg(unix)]
     {
@@ -16,6 +21,26 @@ pub fn create_symlink_or_copy(src: &Path, dst: &Path) -> Result<()> {
         if let Err(_) = std::os::unix::fs::symlink(src, dst) {
             copy_dir_all(src, dst)?;
         }
+    }
+    #[cfg(not(unix))]
+    {
+        copy_dir_all(src, dst)?;
+    }
+    Ok(())
+}
+
+/// Create a symlink with no silent copy fallback (P0-1).
+///
+/// On Unix a symlink failure is returned to the caller so it can surface in
+/// `SyncReport.broken`; copy only ever happens for `mode = copy` targets.
+/// Non-Unix builds keep the copy fallback (no symlink support).
+pub fn create_symlink_strict(src: &Path, dst: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        if dst.exists() || dst.is_symlink() {
+            remove_path(dst)?;
+        }
+        std::os::unix::fs::symlink(src, dst)?;
     }
     #[cfg(not(unix))]
     {

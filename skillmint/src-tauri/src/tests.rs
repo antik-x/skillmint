@@ -580,6 +580,166 @@ fn test_sync_all_isolates_per_target_failure() {
     );
 }
 
+/// P0-1: after the center skill directory is renamed/deleted outside the app,
+/// `sync_all` must NOT create dangling symlinks named after the old path, must
+/// leave whatever is on the agent side untouched, and must report the targets
+/// as Broken (with name + reason) instead of counting them as synced.
+#[test]
+#[cfg(unix)]
+fn test_sync_all_missing_center_creates_no_dangling_links() {
+    let (tmp, db, settings) = setup_test_env();
+
+    let cursor_dir = tmp.path().join("home").join(".cursor").join("skills");
+    let claude_dir = tmp.path().join("home").join(".claude").join("skills");
+    std::fs::create_dir_all(&cursor_dir).unwrap();
+    std::fs::create_dir_all(&claude_dir).unwrap();
+
+    let cursor = insert_agent(&db, "Cursor", &cursor_dir);
+    let claude = insert_agent(&db, "Claude", &claude_dir);
+    let skill = insert_skill(&db, &settings, "old-name", "# Old\n");
+
+    let mut targets = Vec::new();
+    for agent in [&cursor, &claude] {
+        let target = SyncTarget {
+            id: new_id(),
+            skill_id: skill.id.clone(),
+            skill_name: Some(skill.name.clone()),
+            agent_id: agent.id.clone(),
+            agent_name: Some(agent.name.clone()),
+            mode: SyncMode::Symlink,
+            last_sync_at: None,
+            status: SyncStatus::Synced,
+        };
+        db.insert_sync_target(&target).unwrap();
+        targets.push(target);
+    }
+
+    // Cursor already has a healthy link; claude has nothing on disk yet.
+    std::os::unix::fs::symlink(&skill.repo_path, cursor_dir.join("old-name")).unwrap();
+
+    // The skill directory is renamed outside the app (the real incident).
+    let renamed = settings.center_repo.join("new-name");
+    std::fs::rename(&skill.repo_path, &renamed).unwrap();
+
+    let report = sync_all(&db).unwrap();
+
+    assert!(report.updated.is_empty(), "nothing may be applied: {:?}", report.updated.len());
+    assert_eq!(report.broken.len(), 2, "both targets must be reported broken");
+    assert!(
+        report.broken.iter().all(|f| f.skill_name.as_deref() == Some("old-name")
+            && f.error.contains("center 源目录不存在")),
+        "failure must carry target name and reason: {:?}",
+        report.broken
+    );
+
+    // The pre-existing (now dangling) cursor link is left exactly as it was —
+    // sync must not remove it, and must not "rebuild" it either.
+    let cursor_link = cursor_dir.join("old-name");
+    assert!(cursor_link.is_symlink(), "existing agent link must be preserved");
+    assert_eq!(
+        std::fs::read_link(&cursor_link).unwrap(),
+        skill.repo_path,
+        "existing link must still point at the old path"
+    );
+    // Claude had no link; sync must NOT have created a dangling one.
+    assert!(
+        !claude_dir.join("old-name").exists() && !claude_dir.join("old-name").is_symlink(),
+        "no new dangling link may be created"
+    );
+    assert_eq!(
+        std::fs::read_dir(&claude_dir).unwrap().count(),
+        0,
+        "agent dir must stay empty"
+    );
+
+    // DB reflects Broken for both targets.
+    for t in db.get_sync_targets().unwrap() {
+        assert_eq!(t.status, SyncStatus::Broken);
+    }
+
+    // Regression guard: once the center directory is restored, the next
+    // sync_all heals both targets back to Synced.
+    std::fs::rename(&renamed, &skill.repo_path).unwrap();
+    let report = sync_all(&db).unwrap();
+    assert!(report.broken.is_empty());
+    assert_eq!(report.updated.len(), 2);
+    assert!(report.updated.iter().all(|t| t.status == SyncStatus::Synced));
+    assert!(claude_dir.join("old-name").is_symlink());
+    assert_eq!(
+        resolve_symlink(&cursor_dir.join("old-name")),
+        skill.repo_path
+    );
+}
+
+/// P0-1: `apply_sync_target` with a missing center source must not touch the
+/// agent side at all — including NOT removing a real local directory that
+/// happens to sit at the link path.
+#[test]
+#[cfg(unix)]
+fn test_apply_sync_target_missing_center_leaves_agent_side_untouched() {
+    let (tmp, db, settings) = setup_test_env();
+
+    let agent_dir = tmp.path().join("home").join(".cursor").join("skills");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    let agent = insert_agent(&db, "Cursor", &agent_dir);
+    let skill = insert_skill(&db, &settings, "gone-skill", "# Gone\n");
+
+    let target = SyncTarget {
+        id: new_id(),
+        skill_id: skill.id.clone(),
+        skill_name: Some(skill.name.clone()),
+        agent_id: agent.id.clone(),
+        agent_name: Some(agent.name.clone()),
+        mode: SyncMode::Symlink,
+        last_sync_at: None,
+        status: SyncStatus::CenterChanged,
+    };
+
+    // A real local directory occupies the agent path; the center dir is gone.
+    create_agent_skill(&agent_dir, "gone-skill", "# Local Content\n");
+    std::fs::remove_dir_all(&skill.repo_path).unwrap();
+
+    let status = apply_sync_target(&target, &skill, &agent).unwrap();
+    assert_eq!(status, SyncStatus::Broken);
+
+    let local = agent_dir.join("gone-skill");
+    assert!(local.is_dir() && !local.is_symlink(), "local dir must be untouched");
+    assert_eq!(
+        std::fs::read_to_string(local.join("SKILL.md")).unwrap(),
+        "# Local Content\n"
+    );
+}
+
+/// P0-1: `create_symlink_strict` surfaces symlink failures instead of silently
+/// downgrading to a full directory copy.
+#[test]
+#[cfg(unix)]
+fn test_create_symlink_strict_reports_failure_without_copy() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src-skill");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("SKILL.md"), "# Src\n").unwrap();
+
+    let parent = tmp.path().join("readonly-parent");
+    std::fs::create_dir_all(&parent).unwrap();
+    let dst = parent.join("dst-skill");
+
+    make_readonly(&parent);
+    let result = crate::fs::create_symlink_strict(&src, &dst);
+    make_writable(&parent);
+
+    assert!(result.is_err(), "symlink failure must be reported");
+    assert!(
+        !dst.exists() && !dst.is_symlink(),
+        "no copy fallback may materialize at dst"
+    );
+
+    // Happy path: strict creation produces a real symlink.
+    crate::fs::create_symlink_strict(&src, &dst).unwrap();
+    assert!(dst.is_symlink());
+    assert_eq!(std::fs::read_link(&dst).unwrap(), src);
+}
+
 #[test]
 fn test_check_repo_integrity_detects_missing_repo() {
     let (tmp, db, mut settings) = setup_test_env();

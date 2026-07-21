@@ -4,9 +4,9 @@ use anyhow::Result;
 
 use crate::db::Db;
 use crate::fs::{
-    compute_hash, copy_dir_all, create_symlink_or_copy, is_broken_symlink, is_multi_version,
-    remove_path, replace_path_atomic, resolve_symlink, snapshot_version, snapshot_version_with_note,
-    get_effective_skill_dir, LATEST_VERSION,
+    compute_hash, copy_dir_all, create_symlink_or_copy, create_symlink_strict, is_broken_symlink,
+    is_multi_version, remove_path, replace_path_atomic, resolve_symlink, snapshot_version,
+    snapshot_version_with_note, get_effective_skill_dir, LATEST_VERSION,
 };
 use crate::models::{
     Agent, ResolvedSkill, Skill, SkillSource, SyncFailure, SyncMode, SyncStatus, SyncTarget,
@@ -56,16 +56,26 @@ pub fn evaluate_sync_target(
     }
 }
 
+/// Apply one sync target on disk and return the resulting status.
+///
+/// P0-1: if the center source (`skill.repo_path`) is missing — e.g. the skill
+/// directory was renamed or deleted outside the app — nothing on the agent
+/// side is touched and `SyncStatus::Broken` is returned. Unix `symlink()` would
+/// otherwise happily create a dangling link to the gone source.
 pub fn apply_sync_target(target: &SyncTarget, skill: &Skill, agent: &Agent) -> Result<SyncStatus> {
     let center_path = PathBuf::from(&skill.repo_path);
     let agent_path = agent.skill_directory.join(&skill.name);
+
+    if !center_path.exists() {
+        return Ok(SyncStatus::Broken);
+    }
 
     match target.mode {
         SyncMode::Symlink => {
             if agent_path.exists() || agent_path.is_symlink() {
                 remove_path(&agent_path)?;
             }
-            create_symlink_or_copy(&center_path, &agent_path)?;
+            create_symlink_strict(&center_path, &agent_path)?;
         }
         SyncMode::Copy => {
             if agent_path.exists() || agent_path.is_symlink() {
@@ -114,6 +124,8 @@ pub fn sync_failure_from_error(target: &SyncTarget, error: anyhow::Error) -> Syn
     let err_text = error.to_string();
     let recovery_hint = if err_text.contains("权限") || err_text.contains("Permission") || err_text.contains("denied") || err_text.contains("readonly") {
         Some("请检查 Agent 目录的写权限（chmod/所有者）".to_string())
+    } else if err_text.contains("center 源目录不存在") {
+        Some("center 仓库中的该 Skill 目录已被移除或改名；恢复目录、改名登记或删除该同步目标".to_string())
     } else if err_text.contains("Broken") || err_text.contains("目标路径已失效") || err_text.contains("No such file") {
         Some("目标路径已失效，请在 Skill 详情重新绑定或恢复该目录".to_string())
     } else {
@@ -176,8 +188,33 @@ pub fn sync_all(db: &Db) -> Result<SyncReport> {
             }
         }
 
+        if status == SyncStatus::Broken && !PathBuf::from(&skill.repo_path).exists() {
+            // P0-1: the center source is gone (renamed/deleted outside the app).
+            // Never apply — applying would recreate a dangling link named after
+            // the old path. Report it and leave the agent side untouched.
+            broken.push(sync_failure_from_error(
+                &target,
+                anyhow::anyhow!(
+                    "center 源目录不存在（可能已被改名或删除）: {}",
+                    skill.repo_path.display()
+                ),
+            ));
+            continue;
+        }
+
         if status == SyncStatus::CenterChanged || status == SyncStatus::Broken {
             match apply_sync_target_and_record(db, &target, skill, agent) {
+                Ok(new_status) if new_status == SyncStatus::Broken => {
+                    // The center source disappeared between evaluate and apply;
+                    // apply_sync_target left the agent side untouched.
+                    broken.push(sync_failure_from_error(
+                        &target,
+                        anyhow::anyhow!(
+                            "center 源目录不存在（可能已被改名或删除）: {}",
+                            skill.repo_path.display()
+                        ),
+                    ));
+                }
                 Ok(new_status) => {
                     updated.push(SyncTarget {
                         status: new_status,
