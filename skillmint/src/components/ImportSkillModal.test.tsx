@@ -144,3 +144,71 @@ describe("SPEC-F6 T1: ImportSkillModal 按目录去重", () => {
       .toHaveBeenCalledWith("s-imported-2");
   });
 });
+
+// P0-2: agent 侧合法指向 center 的软链 → content_match=true，UI 标注
+// 「与中心一致」，默认不勾选，且永远不会出现「保留本地/保留中心」（防止
+// 软链被实体目录覆盖）。只有实体目录内容分叉才显示「内容冲突」。
+describe("P0-2: 软链条目标注「与中心一致」而非「内容冲突」", () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockClear();
+  });
+
+  it("与中心一致条目默认不勾选、无冲突解决按钮；实体分叉仍显示内容冲突", async () => {
+    const agents: Agent[] = [
+      { id: "a1", name: "claude", skill_directory: "/x/.claude/skills", is_enabled: true, source: "claude-code" },
+    ];
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === "scan_agent_skills") {
+        return Promise.resolve([
+          // 后端 P0-2 短路：合法指向 center 的软链 → content_match=true
+          { name: "whyactions-seo", exists_in_center: true, content_match: true },
+          // 实体目录内容分叉 → 仍是冲突
+          { name: "forked-skill", exists_in_center: true, content_match: false },
+        ]);
+      }
+      return Promise.resolve(undefined);
+    });
+
+    render(<ImportSkillModal agents={agents} onClose={() => {}} onImported={() => {}} />);
+    const select = getAgentSelect();
+    await userEvent.selectOptions(select, "a1");
+    await waitFor(() => expect(screen.getByText("whyactions-seo")).toBeInTheDocument());
+
+    expect(screen.getByText("与中心一致")).toBeInTheDocument();
+    expect(screen.getByText("内容冲突")).toBeInTheDocument();
+
+    // 默认不勾选，且没有渲染任何冲突解决按钮。
+    const syncedCheckbox = screen.getByRole("checkbox", { name: /whyactions-seo/ });
+    expect(syncedCheckbox).not.toBeChecked();
+    expect(screen.queryByText("保留本地")).not.toBeInTheDocument();
+    expect(screen.queryByText("保留中心")).not.toBeInTheDocument();
+
+    // 勾选「与中心一致」条目后也不会出现 保留本地/保留中心。
+    await userEvent.click(syncedCheckbox);
+    expect(screen.queryByText("保留本地")).not.toBeInTheDocument();
+    expect(screen.queryByText("保留中心")).not.toBeInTheDocument();
+  });
+
+  it("勾选实体冲突条目才会出现「保留本地」", async () => {
+    const agents: Agent[] = [
+      { id: "a1", name: "claude", skill_directory: "/x/.claude/skills", is_enabled: true, source: "claude-code" },
+    ];
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === "scan_agent_skills") {
+        return Promise.resolve([
+          { name: "forked-skill", exists_in_center: true, content_match: false },
+        ]);
+      }
+      return Promise.resolve(undefined);
+    });
+
+    render(<ImportSkillModal agents={agents} onClose={() => {}} onImported={() => {}} />);
+    const select = getAgentSelect();
+    await userEvent.selectOptions(select, "a1");
+    await waitFor(() => expect(screen.getByText("forked-skill")).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole("checkbox", { name: /forked-skill/ }));
+    expect(screen.getByText("保留本地")).toBeInTheDocument();
+    expect(screen.getByText("保留中心")).toBeInTheDocument();
+  });
+});

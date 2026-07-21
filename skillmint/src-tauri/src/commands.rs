@@ -553,6 +553,30 @@ fn update_tray_status(state: &AppState, conflict_count: usize) -> Result<(), Str
     Ok(())
 }
 
+/// P0-2: classify one agent-side directory entry against the center repo.
+///
+/// A symlink that resolves to the center repo's same-named directory is a
+/// healthy synced link: report it as present + matching WITHOUT hashing.
+/// (`compute_hash` on a symlink hashes the target-path string, which can never
+/// equal the center content hash — that false mismatch is what labeled every
+/// legit link "内容冲突".) The shortcut lives here at the scan layer rather
+/// than in `compute_hash` because the sync state machine (`evaluate_sync_target`)
+/// and the version/diff logic rely on the existing hash semantics.
+fn classify_agent_skill_entry(
+    path: &std::path::Path,
+    center_path: &std::path::Path,
+) -> (bool, Option<bool>) {
+    if !center_path.exists() {
+        return (false, None);
+    }
+    if crate::fs::is_symlink_to(path, center_path) {
+        return (true, Some(true));
+    }
+    let agent_hash = crate::fs::compute_hash(path).ok();
+    let center_hash = crate::fs::compute_hash(center_path).ok();
+    (true, Some(agent_hash == center_hash && agent_hash.is_some()))
+}
+
 #[tauri::command]
 pub fn scan_agent_skills(
     agent_id: String,
@@ -591,14 +615,7 @@ pub fn scan_agent_skills(
                     continue;
                 }
                 let center_path = settings.center_repo.join(&name);
-                let exists = center_path.exists();
-                let content_match = if exists {
-                    let agent_hash = crate::fs::compute_hash(&path).ok();
-                    let center_hash = crate::fs::compute_hash(&center_path).ok();
-                    Some(agent_hash == center_hash && agent_hash.is_some())
-                } else {
-                    None
-                };
+                let (exists, content_match) = classify_agent_skill_entry(&path, &center_path);
                 items.push(AgentSkillItem {
                     name,
                     exists_in_center: exists,
@@ -690,14 +707,7 @@ pub(crate) fn scan_directory_skills_inner(
                     continue;
                 }
                 let center_path = settings.center_repo.join(&name);
-                let exists = center_path.exists();
-                let content_match = if exists {
-                    let agent_hash = crate::fs::compute_hash(&p).ok();
-                    let center_hash = crate::fs::compute_hash(&center_path).ok();
-                    Some(agent_hash == center_hash && agent_hash.is_some())
-                } else {
-                    None
-                };
+                let (exists, content_match) = classify_agent_skill_entry(&p, &center_path);
                 items.push(AgentSkillItem {
                     name,
                     exists_in_center: exists,
@@ -746,8 +756,17 @@ pub fn import_skill(
     let source = agent.skill_directory.join(&skill_name);
     let center_dest = settings.center_repo.join(&skill_name);
 
-    // If exists in center, handle conflict
-    if center_dest.exists() {
+    // P0-2: an agent-side symlink that already points at this center directory
+    // is a healthy synced link — nothing to copy or resolve. Skip the content
+    // comparison (its hashes can never match, see classify_agent_skill_entry)
+    // and go straight to (re-)registration below. This also removes the dead
+    // end where importing such an item demanded a "local/center" resolution
+    // that would have replaced the link with an entity copy.
+    let already_linked = crate::fs::is_symlink_to(&source, &center_dest);
+
+    if already_linked {
+        // Already synced via symlink; fall through to registration.
+    } else if center_dest.exists() {
         let agent_hash = crate::fs::compute_hash(&source).map_err(|e| e.to_string())?;
         let center_hash = crate::fs::compute_hash(&center_dest).map_err(|e| e.to_string())?;
 

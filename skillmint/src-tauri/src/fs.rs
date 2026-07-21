@@ -140,6 +140,19 @@ pub fn is_broken_symlink(path: &Path) -> bool {
     path.is_symlink() && !path.exists()
 }
 
+/// P0-2: true when `path` is a symlink whose canonical target equals the
+/// canonical form of `target` (e.g. an agent-side link into the center repo).
+/// Broken links and plain directories return false.
+pub fn is_symlink_to(path: &Path, target: &Path) -> bool {
+    if !path.is_symlink() {
+        return false;
+    }
+    match (std::fs::canonicalize(path), std::fs::canonicalize(target)) {
+        (Ok(resolved), Ok(want)) => resolved == want,
+        _ => false,
+    }
+}
+
 /// Resolve symlink target, returning original path if not a symlink.
 pub fn resolve_symlink(path: &Path) -> PathBuf {
     if path.is_symlink() {

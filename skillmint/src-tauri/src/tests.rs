@@ -741,6 +741,93 @@ fn test_create_symlink_strict_reports_failure_without_copy() {
 }
 
 #[test]
+#[cfg(unix)]
+fn test_is_symlink_to() {
+    let tmp = tempfile::tempdir().unwrap();
+    let center = tmp.path().join("repo").join("skill-a");
+    std::fs::create_dir_all(&center).unwrap();
+    let elsewhere = tmp.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+
+    let link = tmp.path().join("link-a");
+    std::os::unix::fs::symlink(&center, &link).unwrap();
+    assert!(crate::fs::is_symlink_to(&link, &center));
+    assert!(!crate::fs::is_symlink_to(&link, &elsewhere));
+    assert!(
+        !crate::fs::is_symlink_to(&center, &center),
+        "plain dir is not a symlink"
+    );
+
+    let broken = tmp.path().join("link-broken");
+    std::os::unix::fs::symlink(tmp.path().join("gone"), &broken).unwrap();
+    assert!(
+        !crate::fs::is_symlink_to(&broken, &center),
+        "broken link resolves nowhere"
+    );
+}
+
+/// P0-2: a symlink that resolves into the center repo's same-named directory
+/// must scan as "与中心一致" (content_match = true), not as a content
+/// conflict. Entity-dir comparison semantics are unchanged.
+#[test]
+#[cfg(unix)]
+fn test_scan_directory_skills_symlink_to_center_reports_match() {
+    let (tmp, db, settings) = setup_test_env();
+
+    let agent_dir = tmp.path().join("home").join(".cursor").join("skills");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    let agent = insert_agent(&db, "Cursor", &agent_dir);
+
+    // Legit symlink into the center repo.
+    let linked = insert_skill(&db, &settings, "linked-skill", "# Linked\n");
+    std::os::unix::fs::symlink(&linked.repo_path, agent_dir.join("linked-skill")).unwrap();
+
+    // Entity directory with identical content.
+    let _same = insert_skill(&db, &settings, "same-skill", "# Same\n");
+    create_agent_skill(&agent_dir, "same-skill", "# Same\n");
+
+    // Entity directory with diverging content -> real conflict.
+    let _diff = insert_skill(&db, &settings, "diff-skill", "# Center\n");
+    create_agent_skill(&agent_dir, "diff-skill", "# Local fork\n");
+
+    // Symlink pointing OUTSIDE the center repo -> must not read as synced.
+    let outside = tmp.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("SKILL.md"), "# Center\n").unwrap();
+    let _ext = insert_skill(&db, &settings, "ext-skill", "# Center\n");
+    std::os::unix::fs::symlink(&outside, agent_dir.join("ext-skill")).unwrap();
+
+    let mut db = db;
+    let items = crate::commands::scan_directory_skills_inner(
+        &mut db,
+        &settings,
+        &agent.id,
+        agent_dir.to_str().unwrap(),
+        true,
+    )
+    .unwrap();
+
+    let get = |name: &str| items.iter().find(|i| i.name == name).unwrap();
+    assert!(get("linked-skill").exists_in_center);
+    assert_eq!(
+        get("linked-skill").content_match,
+        Some(true),
+        "legit center symlink must read as consistent"
+    );
+    assert_eq!(get("same-skill").content_match, Some(true));
+    assert_eq!(
+        get("diff-skill").content_match,
+        Some(false),
+        "entity dir with different content stays a conflict"
+    );
+    assert_eq!(
+        get("ext-skill").content_match,
+        Some(false),
+        "symlink to elsewhere must not be treated as synced"
+    );
+}
+
+#[test]
 fn test_check_repo_integrity_detects_missing_repo() {
     let (tmp, db, mut settings) = setup_test_env();
     // Insert a skill first, then point center_repo at a non-existent path.
