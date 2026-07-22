@@ -132,7 +132,7 @@
 
 ---
 
-## P2-2 打包与工程治理
+## P2-2 打包与工程治理 ✅ (2026-07-21)
 
 1. **bundle 资源缺口**：`tauri.conf.json` 未声明 `tray-normal.png`/`tray-warning.png`（`update_tray_status` 从 exe `../Resources` 读图）与 `repair_paths` 二进制的 `externalBin`——分发后托盘双态与修复工具都会缺失。补 bundle 配置并在 `make build-install verify` 里加断言。
 2. **god-module 拆分**：`commands.rs`（5313 行）、`db.rs`（约 5000 行）按 sync / import / scan / agents / git / trash 拆分子模块；纯搬运，不改行为。
