@@ -137,6 +137,65 @@ describe("Today page", () => {
     expect(screen.getByText(/最活跃的项目是「api-v2」/)).toBeInTheDocument();
   });
 
+  // Regression for issue #3: backend fills by_project with full absolute paths;
+  // the narrative must show only the project name, not the whole path.
+  it("shows only the project name when by_project key is an absolute path", async () => {
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === "get_daily_summary") return Promise.resolve(null);
+      if (cmd === "get_collection_status") {
+        return Promise.resolve([{ source: "claude-code", collector_kind: "claude", data_path: "/x", status: "ok", record_count: 10 }]);
+      }
+      if (cmd === "list_discoveries") return Promise.resolve([]);
+      if (cmd === "get_skill_usage") return Promise.resolve([]);
+      if (cmd === "list_daily_summaries") return Promise.resolve([]);
+      if (cmd === "get_window_metrics") {
+        return Promise.resolve({
+          kind: "day",
+          ref_date: yesterdayIso(),
+          current_window: { start: yesterdayIso(), end: yesterdayIso() },
+          previous_window: { start: yesterdayIso(), end: yesterdayIso() },
+          yoy_window: { start: yesterdayIso(), end: yesterdayIso() },
+          has_previous_baseline: false,
+          has_yoy_baseline: false,
+          comparison: {},
+          token_dimension: {
+            scale: {
+              total_tokens: 9000,
+              fresh_tokens: 6000,
+              input_tokens: 5000,
+              output_tokens: 4000,
+              reasoning_tokens: 0,
+              cache_read_tokens: 0,
+              cache_creation_tokens: 0,
+              model_calls: 5,
+              tool_calls: 0,
+              duration_hours: 0,
+            },
+            distribution: {
+              by_platform: {},
+              by_project: { "/Users/jiangjianyong/projects/03-OPC/tools/skill-hub": 6000, "/Users/jiangjianyong/projects/api-v2": 3000 },
+              by_model: {},
+            },
+            cost: { est_cost_cny: 0, by_platform_cny: {}, billing_mix: {} },
+            diagnostics: { cache_ratio: 0, heavy_sessions: [] },
+          },
+          prompt_dimension: {
+            penetration: { total_prompts: 0, by_platform: {}, by_project: {} },
+            semantics: { classified_ratio: 0, requested_action: {}, target_object: {}, interaction_state: {}, interaction_mode: {} },
+            quality: { score: 0, clarification_correction_rate: 0, planning_ratio: 0, test_object_ratio: 0, improvement_suggestions: [] },
+          },
+          leverage: { est_cost_cny: 0, variable_cost_cny: 0, subscription_cost_cny: 0, fresh_tokens: 0, output_proxy: 0, leverage_per_cny: 0, cost_per_prompt_cny: 0 },
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+    render(<Today />);
+    await waitFor(() => expect(screen.getByText(/与 1 个 Agent 协作 5 次会话/)).toBeInTheDocument());
+    // Only the basename "skill-hub" should appear, not the absolute path.
+    expect(screen.getByText(/最活跃的项目是「skill-hub」/)).toBeInTheDocument();
+    expect(screen.queryByText(/最活跃的项目是「\/Users/)).not.toBeInTheDocument();
+  });
+
   it("hides discovery strip when list_discoveries fails", async () => {
     vi.mocked(invoke).mockImplementation((cmd: string) => {
       if (cmd === "get_daily_summary") return Promise.resolve(null);

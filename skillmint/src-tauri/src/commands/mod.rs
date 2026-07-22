@@ -59,6 +59,7 @@ fn state_to_model(settings: &Settings) -> AppSettings {
         skill_scope_mode: settings.skill_scope_mode,
         project_skill_dir_name: settings.project_skill_dir_name.clone(),
         remote_enabled: settings.remote_enabled,
+        theme: settings.theme.clone(),
         ai,
     }
 }
@@ -84,6 +85,15 @@ pub fn init_app(state: State<'_, AppState>) -> Result<(), String> {
         Err(e) => eprintln!("[migrate] startup migration failed: {}", e),
     }
     scan_and_persist_agents(&db).map_err(|e| e.to_string())?;
+    // Issue #1 data cleanup: older builds persisted one row per (name, source)
+    // so the same directory accrued many duplicate agent rows (e.g. dozens of
+    // "Agent" rows at ~/.skillmint/skills). Remove the leftovers now that
+    // discover_agents dedups by directory path.
+    match db.dedup_agent_directories() {
+        Ok(n) if n > 0 => eprintln!("[migrate] removed {} duplicate agent row(s)", n),
+        Ok(_) => {}
+        Err(e) => eprintln!("[migrate] agent dedup failed: {}", e),
+    }
     // PRD-06: a newly discovered Agent (e.g. ZCode, registered only after sessions
     // were already collected) must be attributed to those historical sessions.
     // Re-link so the project detail page reflects every Agent that touched a project,
@@ -1155,6 +1165,7 @@ pub fn save_settings(
     settings.skill_scope_mode = new_settings.skill_scope_mode;
     settings.project_skill_dir_name = new_settings.project_skill_dir_name;
     settings.remote_enabled = new_settings.remote_enabled;
+    settings.theme = new_settings.theme;
     // SECURITY: persist each model's API key to the keyring, never to settings.json.
     // Keep the user-supplied keys in memory so the UI echoes them back immediately.
     for model in &new_settings.ai.models {

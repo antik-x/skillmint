@@ -53,6 +53,11 @@ function defaultAcpConnection(): AcpConnectionConfig {
 
 export default function AiSettingsPanel() {
   const { settings, setSettings } = useAppStore();
+  // Always read the latest settings at save time. The destructured `settings`
+  // above is a render snapshot and can be stale if the store updates between
+  // renders; using it in `handleSave` previously meant a stale `...settings`
+  // could clobber other fields (issue #2). `getSettings` reads live.
+  const getSettings = useAppStore((s) => s.settings);
   const [form, setForm] = useState<AiConfig>(() => {
     // SPEC-F2 T3: guard against missing or partial AI settings to prevent white-screen.
     const ai = settings.ai;
@@ -173,7 +178,12 @@ export default function AiSettingsPanel() {
     if (saving) return;
     setSaving(true);
     try {
-      const saved = await invoke<typeof settings>("save_settings", { newSettings: { ...settings, ai: form } });
+      // Read the freshest settings from the store instead of the render
+      // snapshot, so we don't accidentally persist a stale `ai` block or drop
+      // sibling fields. Only `ai` is what this panel owns.
+      const saved = await invoke<typeof settings>("save_settings", {
+        newSettings: { ...getSettings, ai: form },
+      });
       setSettings(saved);
       showSuccess("AI 设置已保存");
     } catch (err) {

@@ -241,6 +241,66 @@ impl Db {
         Ok(())
     }
 
+    /// Issue #1 data cleanup: remove persisted duplicate agent rows that share
+    /// the same `skill_directory`. For each directory we keep at most one row,
+    /// preferring (in order) the one with a non-empty `source`, then the
+    /// built-in preset-style id (`agent-<slug>`), then the earliest created.
+    /// All other rows are deleted together with their sync targets.
+    ///
+    /// This runs once at startup (`init_app`) so existing installations
+    /// self-heal; `discover_agents()`/`scan_and_persist_agents` already
+    /// prevents new duplicates from being created.
+    pub fn dedup_agent_directories(&self) -> Result<usize> {
+        // Group ids by skill_directory, preserving creation order.
+        // Value tuple: (id, source_or_none, created_at)
+        let mut groups: std::collections::HashMap<String, Vec<(String, Option<String>, u64)>> =
+            std::collections::HashMap::new();
+        let mut stmt = self.conn.prepare(
+            "SELECT id, COALESCE(source, '') AS source, skill_directory, COALESCE(created_at, 0) AS created_at FROM agents",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let id: String = row.get(0)?;
+            let source: String = row.get(1)?;
+            let dir: String = row.get(2)?;
+            let created_raw: i64 = row.get(3)?;
+            let created: u64 = created_raw.max(0) as u64;
+            Ok((id, dir, if source.is_empty() { None } else { Some(source) }, created))
+        })?;
+        for r in rows {
+            let (id, dir, source, created) = r?;
+            groups.entry(dir).or_default().push((id, source, created));
+        }
+
+        let mut removed = 0usize;
+        for (_, mut entries) in groups {
+            if entries.len() <= 1 {
+                continue;
+            }
+            // Sort so the best survivor is first:
+            //   1. has source (attributable) wins over none
+            //   2. preset id ("agent-...") wins over random uuid
+            //   3. earliest created_at wins (stable legacy row)
+            entries.sort_by(|a, b| {
+                let a_source = a.1.is_some();
+                let b_source = b.1.is_some();
+                b_source
+                    .cmp(&a_source)
+                    .then_with(|| {
+                        let a_preset = a.0.starts_with("agent-");
+                        let b_preset = b.0.starts_with("agent-");
+                        b_preset.cmp(&a_preset)
+                    })
+                    .then_with(|| a.2.cmp(&b.2))
+            });
+            // Keep entries[0], delete the rest.
+            for (id, _, _) in entries.into_iter().skip(1) {
+                self.delete_agent(&id)?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
     /// Get a single agent by id (with last_used_at / project_count).
     pub fn get_agent_by_id(&self, id: &str) -> Result<Option<Agent>> {        let mut stmt = self.conn.prepare(
             "SELECT id, name, skill_directory, is_enabled, discovery_rule, description, source FROM agents WHERE id = ?1",
