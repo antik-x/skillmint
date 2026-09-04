@@ -1,0 +1,22 @@
+skillmint/src-tauri/src/commands/mod.rs
+  h_04c00a69eeb820 1149-1151
+skillmint/src-tauri/src/lib.rs
+  h_04c00a69eeb820 274-276,371-372,388,391-397,399
+skillmint/src/App.tsx
+  h_04c00a69eeb820 10,80-82,86-87,89,99,112,114-116,119
+skillmint/src/components/AboutPanel.tsx
+  h_04c00a69eeb820 3
+skillmint/src/components/PreferencesPanel.tsx
+  h_04c00a69eeb820 4,7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.6.24",
+  "base_commit_sha": "fa3d570a5249ba2b238739052892ddeccee91b86",
+  "prompts": {},
+  "humans": {
+    "h_04c00a69eeb820": {
+      "author": "antik-x <jianyong.me@gmail.com>"
+    }
+  }
+}
