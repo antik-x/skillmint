@@ -24,7 +24,6 @@ export default function Onboarding() {
   const collection = useCollectionStore();
 
   const [step, setStep] = useState(0);
-  const [repoPath, setRepoPath] = useState(settings.center_repo || "~/.skillmint/repo");
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedAgents, setSelectedAgents] = useState<string[]>([]);
   const [sources, setSources] = useState<CollectedSource[]>([]);
@@ -35,10 +34,6 @@ export default function Onboarding() {
   const [collectionTimedOut, setCollectionTimedOut] = useState(false);
   const [collectionLongTimedOut, setCollectionLongTimedOut] = useState(false);
   const [cancelled, setCancelled] = useState(false);
-
-  useEffect(() => {
-    setRepoPath(settings.center_repo || "~/.skillmint/repo");
-  }, [settings.center_repo]);
 
   // SPEC-F2 T4: if collection has been running for 10s with no progress, show downgrade UI.
   useEffect(() => {
@@ -137,7 +132,6 @@ export default function Onboarding() {
     try {
       const newSettings: AppSettings = {
         ...settings,
-        center_repo: repoPath,
         onboarding_completed: true,
       };
       const saved = await invoke<AppSettings>("save_settings", { newSettings });

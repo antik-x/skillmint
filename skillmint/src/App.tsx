@@ -7,7 +7,7 @@ import { PageTransition } from "./components/PageTransition";
 import { SkeletonCard } from "./components/ui/Skeleton";
 import { useAppStore } from "./stores/appStore";
 import { humanizeError, showError, showSuccess } from "./stores/toastStore";
-import type { RepoIntegrity, SyncAllResult } from "./types";
+import { rebuildSkillIndex } from "./lib/npxskills";
 import { GlobalShortcuts } from "./components/GlobalShortcuts";
 import CommandPalette from "./components/CommandPalette";
 import { ShortcutsHelp } from "./components/ShortcutsHelp";
@@ -41,11 +41,6 @@ function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
 
-  // F6: recovery banner when the center repo is missing but DB still has skills.
-  const [repoIntegrity, setRepoIntegrity] = useState<RepoIntegrity | null>(null);
-  // F7: track consecutive auto-sync failures and avoid spam toasts.
-  const [syncFailures, setSyncFailures] = useState(0);
-
   const togglePalette = useCallback(() => setPaletteOpen((v) => !v), []);
   const openHelp = useCallback(() => setHelpOpen(true), []);
 
@@ -74,31 +69,6 @@ function App() {
       });
   }, [loadData, setInitialized, setSettings]);
 
-  // F6: check repo integrity on mount and listen for backend events.
-  useEffect(() => {
-    let unlisten: UnlistenFn | undefined;
-
-    const check = async () => {
-      try {
-        const integrity = await invoke<RepoIntegrity>("check_repo_integrity");
-        setRepoIntegrity(integrity);
-      } catch (err) {
-        console.error("[SkillMint] check_repo_integrity failed:", err);
-      }
-    };
-
-    check();
-    listen("repo-missing-with-records", () => {
-      setRepoIntegrity("missing_with_records");
-    }).then((u) => {
-      unlisten = u;
-    });
-
-    return () => {
-      if (unlisten) unlisten();
-    };
-  }, []);
-
   useEffect(() => {
     if (!initialized) return;
 
@@ -107,26 +77,16 @@ function App() {
       intervalRef.current = null;
     }
 
+    // P3-3: the frontend tick is a light "refresh if stale" probe; the real
+    // fingerprint check also runs on the backend scheduler. Npx-managed state
+    // (locks / agent dirs / hubs) is the only thing that can change here.
     const minutes = settings.auto_sync_interval_minutes;
     if (minutes > 0) {
       intervalRef.current = setInterval(() => {
-        invoke<SyncAllResult>("sync_all_command")
-          .then((result) => {
-            setSyncFailures(0);
-            if (result.failure_count > 0) {
-              showError(
-                `自动同步完成：${result.success_count} 成功，${result.failure_count} 失败（${result.failures[0]?.agent_name ?? ""}）`
-              );
-            }
-            return loadData();
-          })
+        rebuildSkillIndex(null)
+          .then(() => loadData())
           .catch((err) => {
-            setSyncFailures((n) => n + 1);
-            console.error("[SkillMint] auto-sync failed:", err);
-            // Only toast after 3 consecutive failures to avoid noise.
-            if (syncFailures + 1 >= 3) {
-              showError(`自动同步连续失败：${humanizeError(err, { context: "自动同步" }).message}`);
-            }
+            console.error("[SkillMint] index refresh failed:", err);
           });
       }, minutes * 60 * 1000);
     }
@@ -136,7 +96,7 @@ function App() {
         clearInterval(intervalRef.current);
       }
     };
-  }, [initialized, settings.auto_sync_interval_minutes, loadData, syncFailures]);
+  }, [initialized, settings.auto_sync_interval_minutes, loadData]);
 
   // SPEC-F3: handle skillmint:// deep links.
   useEffect(() => {
@@ -149,17 +109,14 @@ function App() {
       unlisten = await listen<string>("deep-link", (e) => {
         console.log("[deep-link]", e.payload);
       });
+      // P3-3: deep-link sync now means "rebuild the skill index from disk".
       unlistenSync = await listen("deep-link-sync", () => {
-        invoke<SyncAllResult>("sync_all_command")
-          .then((result) => {
-            if (result.failure_count > 0) {
-              showError(`同步完成：${result.success_count} 成功，${result.failure_count} 失败`);
-            } else {
-              showSuccess(`同步完成：${result.success_count} 个目标成功`);
-            }
+        rebuildSkillIndex(null)
+          .then((summary) => {
+            showSuccess(`已刷新技能索引：${summary.total} 项`);
             return loadData();
           })
-          .catch((err) => showError(humanizeError(err, { context: "同步" })));
+          .catch((err) => showError(humanizeError(err, { context: "刷新索引" })));
       });
       unlistenOpen = await listen<string>("deep-link-open-skill", (e) => {
         setActiveTab("skillLibrary");
@@ -211,27 +168,6 @@ function App() {
 
   return (
     <div className="flex h-full flex-col bg-primary text-primary">
-      {repoIntegrity === "missing_with_records" && (
-        <div className="flex items-center justify-between border-b border-warning/20 bg-warning/10 px-4 py-2 text-xs text-warning">
-          <span>
-            ⚠ 中心仓库缺失或为空，但数据库仍有 Skill 记录。请从备份恢复，或在设置中确认重建。
-          </span>
-          <div className="flex gap-2">
-            <button
-              onClick={() => setActiveTab("settings")}
-              className="rounded border border-warning/20 px-2 py-0.5 hover:bg-warning/20"
-            >
-              去设置
-            </button>
-            <button
-              onClick={() => setRepoIntegrity("healthy")}
-              className="rounded border border-warning/20 px-2 py-0.5 hover:bg-warning/20"
-            >
-              忽略
-            </button>
-          </div>
-        </div>
-      )}
       <div className="flex flex-1 overflow-hidden">
         <Sidebar />
         <main className="relative flex-1 overflow-hidden">

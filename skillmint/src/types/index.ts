@@ -149,18 +149,12 @@ export interface CollectionJob {
 
 export interface AppSettings {
   device_id: string;
-  center_repo: string;
-  default_sync_mode: SyncMode;
   auto_sync_interval_minutes: number;
   launch_at_login: boolean;
   show_dock_icon: boolean;
   onboarding_completed: boolean;
-  skill_scope_mode: "global" | "project";
   /** P0-3: user-configured extra scan/import exclusion names (settings.json). */
   scan_exclude_names?: string[];
-  /** P2-1: auto `git add`+`commit` in the center repo after imports (default off). */
-  auto_commit_after_import: boolean;
-  project_skill_dir_name: string;
   /** PRD-07: master switch for all remote (network) features. Default false. */
   remote_enabled: boolean;
   /** PRD-08 §3.6: optional LLM config for prompt classification + daily summaries. */

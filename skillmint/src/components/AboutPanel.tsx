@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { Box, Code, FileJson, Globe, HardDrive, Info, Network, Shield } from "lucide-react";
+import { Box, Code, FileJson, HardDrive, Info, Network, Shield } from "lucide-react";
 import { useAppStore } from "../stores/appStore";
 import { Card } from "./ui/Card";
 
@@ -19,7 +19,6 @@ export default function AboutPanel() {
     { label: "版本号", value: appVersion ? `v${appVersion}` : "v0.1.0", icon: Info },
     { label: "运行模式", value: "Local Mode", icon: Shield },
     { label: "设备 ID", value: settings.device_id || "未生成", icon: HardDrive, mono: true },
-    { label: "中心仓库路径", value: settings.center_repo || "~/.skillmint/repo", icon: Globe, mono: true },
   ];
 
   return (

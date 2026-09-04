@@ -27,15 +27,10 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 const settingsObj: AppSettings = {
   device_id: "test-device",
-  center_repo: "/repo",
-  default_sync_mode: "symlink",
   auto_sync_interval_minutes: 0,
   launch_at_login: false,
   show_dock_icon: true,
   onboarding_completed: true,
-  skill_scope_mode: "global",
-  auto_commit_after_import: false,
-  project_skill_dir_name: ".skillmint/skills",
   remote_enabled: false,
   theme: "system",
   ai: { models: [], acp_connections: [], prefer_acp: false, strict_local_mode: false },

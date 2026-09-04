@@ -125,16 +125,10 @@ impl std::fmt::Display for SyncStatus {
 pub struct AppSettings {
     #[serde(default)]
     pub device_id: String,
-    pub center_repo: PathBuf,
-    pub default_sync_mode: SyncMode,
     pub auto_sync_interval_minutes: u32,
     pub launch_at_login: bool,
     pub show_dock_icon: bool,
     pub onboarding_completed: bool,
-    #[serde(default)]
-    pub skill_scope_mode: SkillScopeMode,
-    #[serde(default = "default_project_skill_dir")]
-    pub project_skill_dir_name: String,
     /// PRD-07: master switch for remote features.
     #[serde(default)]
     pub remote_enabled: bool,

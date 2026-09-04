@@ -271,25 +271,9 @@ pub fn run() {
                 eprintln!("[app] failed to reset stale collection jobs: {e}");
             }
 
-            // F6: detect a missing/empty center repo while the DB still has skills.
-            // Emit an event so the frontend can show a recovery banner.
-            let has_skills = !db.get_skills()?.is_empty();
-            let repo_exists = settings.center_repo.exists();
-            let repo_empty = if repo_exists {
-                std::fs::read_dir(&settings.center_repo)
-                    .map(|mut d| d.next().is_none())
-                    .unwrap_or(true)
-            } else {
-                true
-            };
-            if has_skills && (!repo_exists || repo_empty) {
-                let _ = app_handle.emit("repo-missing-with-records", ());
-            }
-
-            // Auto-discover agents on first run
-            if !settings.center_repo.exists() {
-                std::fs::create_dir_all(&settings.center_repo)?;
-            }
+            // P3-6: the center repo is retired — no bootstrap, no recovery
+            // banner. The skills inventory comes from the npx locks, the agent
+            // directories, and the private hubs (rebuildable index).
 
             app.manage(AppState {
                 db: Mutex::new(db),
@@ -384,7 +368,8 @@ pub fn run() {
                 *state.tray.lock().map_err(|e| e.to_string())? = Some(tray);
             }
 
-            // SPEC-F3: background startup consistency check (does not block startup).
+            // P3-3: rebuild the skill index once at startup (background; the
+            // fingerprint check makes it a no-op when nothing changed).
             {
                 let db_path = app_dir.join("skillmint.db");
                 let device_id = {
@@ -400,12 +385,18 @@ pub fn run() {
                         match crate::db::Db::new(&db_path) {
                             Ok(mut db) => {
                                 if let Err(e) = db.init(&device_id) {
-                                    eprintln!("[startup-check] failed to init db: {e}");
+                                    eprintln!("[startup-index] failed to init db: {e}");
                                     return;
                                 }
-                                crate::sync::run_startup_consistency_check(db);
+                                match crate::index::rebuild_if_stale(&db, None) {
+                                    Ok(Some(summary)) => {
+                                        eprintln!("[startup-index] rebuilt: {} entries", summary.total);
+                                    }
+                                    Ok(None) => {}
+                                    Err(e) => eprintln!("[startup-index] rebuild failed: {e}"),
+                                }
                             }
-                            Err(e) => eprintln!("[startup-check] failed to open db: {e}"),
+                            Err(e) => eprintln!("[startup-index] failed to open db: {e}"),
                         }
                     });
                 }

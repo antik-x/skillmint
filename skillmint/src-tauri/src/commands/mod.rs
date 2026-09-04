@@ -52,14 +52,10 @@ fn state_to_model(settings: &Settings) -> AppSettings {
     ai.load_keys();
     AppSettings {
         device_id: settings.device_id.clone(),
-        center_repo: settings.center_repo.clone(),
-        default_sync_mode: settings.default_sync_mode,
         auto_sync_interval_minutes: settings.auto_sync_interval_minutes,
         launch_at_login: settings.launch_at_login,
         show_dock_icon: settings.show_dock_icon,
         onboarding_completed: settings.onboarding_completed,
-        skill_scope_mode: settings.skill_scope_mode,
-        project_skill_dir_name: settings.project_skill_dir_name.clone(),
         remote_enabled: settings.remote_enabled,
         theme: settings.theme.clone(),
         ai,
@@ -1150,27 +1146,13 @@ pub fn save_settings(
 
     let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
 
-    let normalized_repo = {
-        let s = new_settings.center_repo.to_string_lossy().to_string();
-        let expanded = expand_path(&s);
-        if expanded.as_os_str().is_empty() {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".skillmint")
-                .join("repo")
-        } else {
-            expanded
-        }
-    };
-
-    settings.center_repo = normalized_repo;
-    settings.default_sync_mode = new_settings.default_sync_mode;
+    // P3-6: center repo / sync-mode / scope-mode settings retired — the skills
+    // library is driven by the npx locks + private hubs now. The remaining
+    // internal `settings.center_repo` only serves dormant legacy commands.
     settings.auto_sync_interval_minutes = new_settings.auto_sync_interval_minutes;
     settings.launch_at_login = new_settings.launch_at_login;
     settings.show_dock_icon = new_settings.show_dock_icon;
     settings.onboarding_completed = new_settings.onboarding_completed;
-    settings.skill_scope_mode = new_settings.skill_scope_mode;
-    settings.project_skill_dir_name = new_settings.project_skill_dir_name;
     settings.remote_enabled = new_settings.remote_enabled;
     settings.theme = new_settings.theme;
     // SECURITY: persist each model's API key to the keyring, never to settings.json.
@@ -1192,9 +1174,6 @@ pub fn save_settings(
     // device_id is server-owned and read-only here: ignore whatever the frontend sent.
 
     settings.save(&app_dir).map_err(|e| e.to_string())?;
-
-    // Ensure center repo exists after settings change
-    std::fs::create_dir_all(&settings.center_repo).map_err(|e| e.to_string())?;
 
     // Auto-sync interval may have changed: restart the background scheduler so
     // the new cadence (or 0 = disabled) takes effect immediately (PRD-0 §4.7).

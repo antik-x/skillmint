@@ -95,7 +95,6 @@ export default function Dashboard() {
   const skills = useAppStore((state) => state.skills);
   const agents = useAppStore((state) => state.agents);
   const syncTargets = useAppStore((state) => state.syncTargets);
-  const settings = useAppStore((state) => state.settings);
   const loadData = useAppStore((state) => state.loadData);
   const setActiveTab = useAppStore((state) => state.setActiveTab);
   const setSkillLibrarySubTab = useAppStore((state) => state.setSkillLibrarySubTab);
@@ -306,7 +305,6 @@ export default function Dashboard() {
         <Card className="p-10 text-center">
           <div className="text-lg font-medium text-primary">开始使用 SkillMint</div>
           <p className="mt-2 text-sm text-secondary">
-            中心仓库路径：{settings.center_repo || "~/.skillmint/repo"}
           </p>
           <div className="mt-4 flex justify-center gap-2">
             <Button variant="secondary" size="sm" onClick={handleScanAgents}>
