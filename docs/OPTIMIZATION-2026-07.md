@@ -161,3 +161,42 @@
 - [ ] 托盘同步健康 = sync_targets 总数中 synced 占比，与 DB 直查一致
 - [ ] `cd ~/.skillmint/repo && git status` 干净（或 auto-commit 已生效）
 - [ ] 冷启动 + `open "skillmint://sync"` 窗口必现
+
+---
+
+## P3 npx skills 集成：app 全面转为 `skills` CLI 的上层 GUI ✅ (2026-09-04)
+
+**决策背景**：SkillMint 自研的 center-repo symlink 同步引擎与 `npx skills` 生态（vercel-labs/skills，canonical 目录 `.agents/skills` + 两份 lock 文件 + 77-agent 矩阵）在同一个 agent 目录空间里各自为政，存在互相打架的结构性风险。定案：**不另起炉灶**——安装/更新/卸载/搜索全部走真实 CLI，app 是终端命令的上层 GUI（Mole 范式：磁盘状态唯一事实源，app 无平行状态）。实施于分支 `feat/npx-skills-integration`。
+
+### P3-1 npx 运行时 ✅
+- `src-tauri/src/npx.rs`：node/npx 探测链（设置覆盖 → PATH → nvm → Homebrew），`detect_node_env` 报告 Node ≥ 22.20 检查结果并给出安装引导文案；
+- 显式参数构造器（`add/remove/update/ls`，一律 `-s/-a/-y`，GUI 安装禁止交互）；env 注入：`SKILLS_API_URL`（搜索镜像）、`HTTPS_PROXY/HTTP_PROXY/ALL_PROXY`（代理，覆盖 CLI 的 git clone 步骤）、`DISABLE_TELEMETRY=1`（默认，可关）；
+- 流式执行（超时保护 + `npx-output` 事件）与 `skills ls --json` 解析。
+
+### P3-2 agent 全表 ✅
+- `src-tauri/src/agents_table.rs`：静态镜像 vercel-labs/skills `src/agents.ts` 的 77-agent 矩阵（key/显示名/项目目录/全局目录），单测锚定 claude-code/zcode/codex/cursor 等关键映射；
+- `scan.rs` preset 由全表派生；`~/.agents/skills` 归属合成 Agent "Universal Agents"（npx 全局 canonical 语义）；`~/.cursor/rules`、`~/.claude/commands`、`~/.codex/instructions`、`~/.zcode/cli/plugins` 等资源目录保留扫描。
+
+### P3-3 可重建索引 ✅
+- `skills_lock.rs`：解析项目 `skills-lock.json`（schema v1，`computedHash`）与全局 `~/.agents/.skill-lock.json`（schema v3，`skillFolderHash`）；
+- `index.rs`：统一索引 = 两份 lock + canonical 目录 + 全部 agent 目录（含 unmanaged/断链识别）+ 两个私有 hub；`db/index_store.rs`：`skill_index` 表整体替换式写入，内容 hash 与上次扫描比对产生「已被本地修改」状态；
+- 刷新策略：窗口聚焦 + 安装动作后 + 定时（复用 `auto_sync_interval_minutes`）的 mtime 指纹探测，变化才重建；启动时后台重建一次；`skillmint://sync` 语义改为「重建索引」。
+
+### P3-4 安装/卸载/更新 UI ✅
+- `pages/InstalledSkills.tsx` 取代 center-repo 库页成为「技能」子页：来源/管辖/状态徽章、agent 芯片、项目上下文选择器、更新/卸载/收集到 Hub 动作；
+- 安装面板：scope/agent 多选/`--copy`，操作前展示**等价 CLI 命令**（复制 + 在终端打开），运行时流式回显；安装完成后自动重建索引 + 对落盘 SKILL.md 跑 `scan_safety` + 记 `install_audit`；
+- Discover：新增 skills.sh 注册表搜索区（`/api/search`，走镜像设置），一键 npx 安装；原两个安装对话框从 `install_remote_skill` 切到 `npx_install`（安装逻辑单轨化，安装前安全扫描保留为提示、安装后扫描成为兜底）。
+
+### P3-5 私有 hub ✅
+- `src-tauri/src/hub.rs`：全局 `~/.skillmint/hub`（独立 git，可配远端、手动推送）与项目 `<project>/.skillmint/hub`（随项目仓库提交，不嵌套 .git）；
+- 新建 skill（模板 + git 自动提交）、收集到 hub（**只复制**，不动源目录/npx lock/agent 链接，跳过 `.git/node_modules/…`）、远端配置与推送状态（无 upstream 时 ahead=待推提交数）；
+- 卸载前快照到 `~/.skillmint/trash/` 并登记 SPEC-C3 trash 表（30 天过期，启动清理沿用）。
+
+### P3-6 退役清理 ✅（UI/入口层；引擎代码删除为 P3-6b 跟进项）
+- 设置删减：`center_repo` / `default_sync_mode` / `skill_scope_mode` / `project_skill_dir_name` 从 Settings 暴露面（后端 AppSettings 模型 + 前端类型/store/偏好面板）移除；
+- 入口全断：App.tsx 自动 tick 与 deep-link 改为索引刷新、center repo 恢复横幅移除；lib.rs 不再引导 center repo、启动一致性检查替换为指纹化索引重建；Skills.tsx 库页与相关测试删除；Onboarding 不再询问仓库路径。
+- **P3-6b（未完成，机械性删除）**：`sync.rs`/`fs.rs` center 侧原语/版本快照/`install_skill_to_project`/`resolve_diff` 等遗留命令与 `src/tests.rs` 中对应用例仍在编译，但已无任何 UI 入口可达；删除时需连带 Projects 页的遗留安装/提升按钮与 `ScheduledTaskForm` 的 `backup_center_repo` 任务类型。
+
+**验收**：`cargo test --lib` 247 通过；`npm run test:ci`（Node 22）166 通过；真实机器上 `npx skills add vercel-labs/agent-skills -s pdf …` 后 app 聚焦即显示该 skill（lock 驱动），卸载走确认 + trash 快照。
+
+**加速配置结论**（回答「npx skills 是否需要加速配置」）：需要、且已内置最小集——skills.sh 搜索在国内可能不可达（`SKILLS_API_URL` 可指向镜像），CLI 内部 fetch 不读 `HTTP(S)_PROXY`，但安装下载走 git（受 `HTTPS_PROXY`/git config 影响），api.github.com 失败会自动回退 git clone，因此「搜索镜像 + git 代理」两板斧即可覆盖安装主链路；`GITHUB_TOKEN` 只解决限流不解决可达性。

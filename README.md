@@ -19,13 +19,14 @@ Every day you repeat yourself to AI assistants: the same project conventions, th
 
 - **Collect** — Read-only collection of usage data from 10+ AI agents (Cursor, Claude Code, Codex, ZCode, Kimi, …) running on your machine.
 - **Distill** — Discover repeat patterns and high-value prompts; turn them into first-class skills with YAML frontmatter.
-- **Sync** — One central local repository (`~/.skillmint/repo`) is symlinked into every agent's own skill directory, so an edit lands everywhere.
+- **Install (npx skills)** — Installs, updates, removals and registry search all run the real [`skills` CLI](https://skills.sh) (`npx skills add/update/remove`) across its 77-agent matrix — project or global scope, with the exact equivalent command shown before every operation.
+- **Private hubs** — Author personal skills in `~/.skillmint/hub` (own git, push to a private remote) or team skills in `<project>/.skillmint/hub` (committed with the project); install them anywhere via `npx skills add <hub>`.
 - **Measure** — Per-skill usage stats, token spend, and ROI, so you know which skills actually compound.
-- **Local-first** — Zero servers. All data stays on your machine. Remote sources are opt-in.
+- **Local-first** — Zero servers. All data stays on your machine. Network features (skills.sh search, git installs) are opt-in; npx telemetry is disabled by default.
 
 ### Supported Agents
 
-Cursor · Claude Code · Codex · ZCode · Kimi · Gemini CLI · ACP-compatible CLIs · and more (see the in-app Agents page for the full, auto-detected list).
+The full `npx skills` matrix is built in — 77 agents including Claude Code (`.claude/skills`), Codex, Cursor, ZCode (`.zcode/skills`), OpenCode, Windsurf, Gemini CLI, GitHub Copilot, Cline, Kimi and more. Project-scope installs share the `.agents/skills` canonical store with per-agent symlinks; SkillMint auto-detects anything the CLI installs (via its lock files) the moment the app regains focus.
 
 ### Install
 
@@ -37,7 +38,7 @@ cd skillmint
 make build-install   # builds, installs to /Applications, and verifies
 ```
 
-Requirements: macOS 14+, Node 22 (via nvm), Rust stable, `rsync`.
+Requirements: macOS 14+, Node ≥ 22.20 (via nvm; `npx skills` requires it), Rust stable, `rsync`, `git`.
 
 ### Privacy
 
@@ -48,7 +49,7 @@ SkillMint runs entirely on your device. It opens no outbound network connection 
 - [ ] v0.2 — Cross-agent skill deduplication & merge suggestions
 - [ ] v0.2 — Skill knowledge graph
 - [ ] v0.3 — Opt-in remote skill bundles (pull-only, signed)
-- [ ] v0.3 — Multi-machine sync via your own Git remote
+- [x] v0.3 — Multi-machine sync via your own Git remote (global private hub: push/pull through any git remote, install with `npx skills add <url>`)
 
 ### License
 
@@ -68,13 +69,14 @@ Apache License 2.0. See [`LICENSE`](./LICENSE).
 
 - **采集** — 只读采集本机 10+ AI Agent 的使用数据(Cursor、Claude Code、Codex、ZCode、Kimi……)。
 - **沉淀** — 自动发现重复模式与高价值 Prompt,一键转化为带 YAML frontmatter 的标准 Skill。
-- **同步** — 中心仓库 `~/.skillmint/repo` 通过软链分发到所有 Agent 目录,编辑一次,处处生效。
+- **安装(npx skills)** — 安装、更新、卸载与搜索全部通过真实 [`skills` CLI](https://skills.sh)(`npx skills add/update/remove`)完成,覆盖其 77 个 Agent 矩阵;支持项目级/全局两种作用域,每次操作前都会展示等价的终端命令。
+- **私有 Hub** — 个人技能创作于 `~/.skillmint/hub`(独立 git,可推送私有远端),团队技能放 `<project>/.skillmint/hub`(随项目仓库提交);任何位置都可用 `npx skills add <hub>` 安装。
 - **度量** — 按 Skill 统计调用次数、Token 消耗与 ROI,让复利可见。
-- **本地优先** — 零服务端,数据全部留在本机;远程源为可选项,默认不发起任何网络请求。
+- **本地优先** — 零服务端,数据全部留在本机;联网功能(skills.sh 搜索、git 安装)均为可选项,npx 遥测默认关闭。
 
 ### 支持的 Agent
 
-Cursor · Claude Code · Codex · ZCode · Kimi · Gemini CLI · 兼容 ACP 的 CLI · 以及更多(应用内「Agent」页会自动探测已安装的 Agent)。
+内置 `npx skills` 全量矩阵 —— 77 个 Agent,包括 Claude Code(`.claude/skills`)、Codex、Cursor、ZCode(`.zcode/skills`)、OpenCode、Windsurf、Gemini CLI、GitHub Copilot、Cline、Kimi 等。项目级安装共享 `.agents/skills` canonical 目录并向各 Agent 建符号链接;CLI 装的技能会通过其 lock 文件被 app 自动扫到(窗口聚焦即刷新)。
 
 ### 安装
 
@@ -84,7 +86,7 @@ cd skillmint
 make build-install   # 构建 + 安装到 /Applications + 自动校验
 ```
 
-环境要求:macOS 14+、Node 22(通过 nvm)、Rust stable、`rsync`。
+环境要求:macOS 14+、Node ≥ 22.20(通过 nvm,`npx skills` 硬性要求)、Rust stable、`rsync`、`git`。
 
 ### 隐私
 
@@ -95,7 +97,7 @@ make build-install   # 构建 + 安装到 /Applications + 自动校验
 - [ ] v0.2 — 跨 Agent skill 去重与合并建议
 - [ ] v0.2 — Skill 知识图谱
 - [ ] v0.3 — 可选的远程 skill bundle(只读拉取,签名校验)
-- [ ] v0.3 — 通过自有 Git 远程实现多机同步
+- [x] v0.3 — 通过自有 Git 远程实现多机同步(全局私有 Hub:git 推拉,`npx skills add <url>` 安装)
 
 ### 协议
 
