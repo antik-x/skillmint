@@ -9,6 +9,7 @@ use tauri::{AppHandle, Emitter, Listener, Manager};
 use tokio::sync::watch;
 
 mod acp;
+mod agents_table;
 pub mod commands;
 mod classifier;
 mod collector;
@@ -16,15 +17,19 @@ pub(crate) mod collectors_ext;
 pub mod db;
 mod discovery;
 mod fs;
+mod hub;
+mod index;
 mod kg;
 mod llm;
 mod metrics;
 mod models;
+mod npx;
 mod pricing;
 mod remote;
 mod scan;
 mod scheduler;
 pub mod settings;
+mod skills_lock;
 mod sync;
 mod window;
 mod analyzer;
@@ -181,26 +186,26 @@ fn start_sync_scheduler(app: &AppHandle) {
                 _ = rx.changed() => break, // stop requested
             }
 
-            // Run one sync tick. Probe with try_lock as a best-effort "busy"
-            // check: if a user-triggered sync is in flight, skip this tick
-            // rather than block the async runtime. (There's a benign race
-            // between the probe and run_sync_core re-locking, but the runtime
-            // is multi-threaded so worst case is a brief block.)
+            // Run one refresh tick (P3-3): cheap mtime fingerprint probe of the
+            // npx locks / canonical stores / hubs; rebuild the index only when
+            // something changed. A user-triggered operation holding the locks
+            // is skipped rather than blocked.
             let state = match app_handle.try_state::<AppState>() {
                 Some(s) => s,
                 None => break, // app shutting down
             };
-            let busy = state.db.try_lock().is_err() || state.settings.try_lock().is_err();
-            if busy {
-                continue; // skip this tick, wait for the next interval
-            }
-            let res = commands::run_sync_core(&state);
-            match res {
-                Ok(result) => {
-                    let _ = update_tray_from_result(&app_handle, result.import_conflicts);
+            let (db, settings) = match (state.db.try_lock(), state.settings.try_lock()) {
+                (Ok(db), Ok(s)) => (db, s),
+                _ => continue, // busy; wait for the next interval
+            };
+            match crate::index::rebuild_if_stale(&db, None) {
+                Ok(Some(summary)) => {
+                    let _ = update_tray_from_result(&app_handle, summary.modified);
                 }
-                Err(e) => eprintln!("[auto-sync] tick failed: {}", e),
+                Ok(None) => {}
+                Err(e) => eprintln!("[auto-refresh] index rebuild failed: {e}"),
             }
+            drop((db, settings));
         }
     });
 }
@@ -680,6 +685,27 @@ pub fn run() {
             // P2-2: data dictionary + raw data export
             commands::export_data_dictionary,
             commands::export_raw_data,
+            // P3: npx skills bridge — install/remove/update via the real CLI,
+            // rebuildable index, private hubs, registry search.
+            commands::npx_env,
+            commands::get_agents_table,
+            commands::npx_install,
+            commands::npx_remove,
+            commands::npx_update,
+            commands::npx_list,
+            commands::npx_preview_command,
+            commands::skills_search,
+            commands::rebuild_skill_index,
+            commands::get_skill_index,
+            commands::skill_index_stale,
+            commands::read_skill_index_content,
+            commands::hub_create_skill,
+            commands::hub_collect_skill,
+            commands::hub_status_cmd,
+            commands::hub_push,
+            commands::hub_set_remote,
+            commands::hub_install_source,
+            commands::hub_list_skills,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

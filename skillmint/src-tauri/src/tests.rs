@@ -87,9 +87,9 @@ fn test_scan_discovers_agents() {
     assert_eq!(items.count(), 1);
 }
 
-/// Regression for issue #1: two presets ("Kimi Code" and "Generic Agents") both
-/// point at `~/.agents/skills`. `discover_agents()` must emit only ONE agent for
-/// that directory, preferring the attributable (source-bearing) preset.
+/// Regression for issue #1 (updated by P3-2): `~/.agents/skills` is now the
+/// npx CLI's global canonical store and is claimed by the synthetic
+/// "Universal Agents" row — no matter how many other presets also list it.
 #[test]
 fn test_discover_agents_dedups_shared_directory() {
     let tmp = tempfile::tempdir().unwrap();
@@ -120,10 +120,10 @@ fn test_discover_agents_dedups_shared_directory() {
         for_shared.len(),
         for_shared.iter().map(|a| &a.name).collect::<Vec<_>>()
     );
-    // Prefer the attributable preset ("Kimi Code" / source "kimi-code") over
-    // the generic fallback ("Generic Agents" / no source).
-    assert_eq!(for_shared[0].name, "Kimi Code");
-    assert_eq!(for_shared[0].source.as_deref(), Some("kimi-code"));
+    // P3-2: the canonical store is attributed to "Universal Agents" so the
+    // app treats its contents as npx-managed rather than any single tool's.
+    assert_eq!(for_shared[0].name, "Universal Agents");
+    assert_eq!(for_shared[0].source.as_deref(), Some("universal"));
 
     // Global invariant: no two discovered agents share a skill_directory.
     let mut seen_paths: std::collections::HashSet<_> = std::collections::HashSet::new();

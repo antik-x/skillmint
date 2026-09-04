@@ -31,6 +31,7 @@ use crate::AppState;
 mod agents;
 mod git;
 mod import;
+mod npxskills;
 mod repair;
 mod scan;
 mod sync;
@@ -39,6 +40,7 @@ mod trash;
 pub use agents::*;
 pub use git::*;
 pub use import::*;
+pub use npxskills::*;
 pub use repair::*;
 pub use scan::*;
 pub use sync::*;
@@ -61,6 +63,11 @@ fn state_to_model(settings: &Settings) -> AppSettings {
         remote_enabled: settings.remote_enabled,
         theme: settings.theme.clone(),
         ai,
+        npx_package: settings.npx_package.clone(),
+        skills_api_url: settings.skills_api_url.clone(),
+        proxy_env: settings.proxy_env.clone(),
+        disable_telemetry: settings.disable_telemetry,
+        node_path_override: settings.node_path_override.clone(),
     }
 }
 
@@ -1172,6 +1179,16 @@ pub fn save_settings(
         crate::settings::AiConfig::write_key(&model.id, &model.api_key);
     }
     settings.ai = new_settings.ai;
+    // P3: npx skills integration settings.
+    settings.npx_package = if new_settings.npx_package.trim().is_empty() {
+        "skills@latest".to_string()
+    } else {
+        new_settings.npx_package.trim().to_string()
+    };
+    settings.skills_api_url = new_settings.skills_api_url;
+    settings.proxy_env = new_settings.proxy_env;
+    settings.disable_telemetry = new_settings.disable_telemetry;
+    settings.node_path_override = new_settings.node_path_override;
     // device_id is server-owned and read-only here: ignore whatever the frontend sent.
 
     settings.save(&app_dir).map_err(|e| e.to_string())?;

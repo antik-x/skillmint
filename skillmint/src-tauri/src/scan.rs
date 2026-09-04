@@ -6,30 +6,59 @@ use anyhow::Result;
 use crate::db::Db;
 use crate::models::Agent;
 
-/// One built-in agent preset. PRD-06: the entity is the Agent (name + source),
-/// not the directory; a tool may own multiple directories. Here each preset row is
-/// one (tool, source, directory, role) — `scan_and_persist_agents` groups rows by
-/// `(name, source)` so that one tool produces one Agent row with N directories.
-const PRESETS: &[(&str, &str, &str, &str, Option<&str>)] = &[
-    // (name, source, directory_rule, role, description)
-    ("Cursor", "cursor", "~/.cursor/skills", "skills", Some("Cursor 编辑器的 Skills 目录，用于存放可被 Cursor Agent 调用的技能包。")),
-    ("Cursor", "cursor", "~/.cursor/rules", "rules", Some("Cursor 编辑器的 Rules 目录，用于存放全局或项目级规则文件。")),
-    ("Claude Code", "claude-code", "~/.claude/skills", "skills", Some("Anthropic Claude Code 的 Skills 目录，供 Claude 在对话中引用。")),
-    ("Claude Code", "claude-code", "~/.claude/commands", "commands", Some("Anthropic Claude Code 的 Commands 目录，用于存放自定义斜杠命令。")),
-    ("Codex", "codex", "~/.codex/skills", "skills", Some("OpenAI Codex CLI 的 Skills 目录，供 Codex Agent 使用。")),
-    ("Codex", "codex", "~/.codex/instructions", "instructions", Some("OpenAI Codex CLI 的 Instructions 目录，用于存放系统级指令。")),
-    ("ZCode", "zcode", "~/.zcode/cli/plugins", "skills", Some("ZCode 的插件目录，用于存放 ZCode Agent 可识别的技能。")),
-    // PRD-08 P1: OpenCode usage data is collected, so it gets a source-keyed
-    // Agent for attribution (matches the collector's SOURCE_OPENCODE).
-    ("OpenCode", "opencode", "~/.local/share/opencode/skills", "skills", Some("OpenCode 的 Skills 目录，供 OpenCode Agent 使用。")),
-    ("Kiro", "kiro", "~/.kiro/skills", "skills", Some("Kiro 的 Skills 目录，用于存放 Kiro Agent 可识别的技能。")),
-    ("Lingma", "lingma", "~/.lingma/skills", "skills", Some("通义灵码的 Skills 目录，用于存放灵码 Agent 可使用的技能。")),
-    ("CoPaw", "copaw", "~/.copaw/skills", "skills", Some("CoPaw 的 Skills 目录，用于存放 CoPaw Agent 可识别的技能。")),
-    ("OpenClaw", "openclaw", "~/.openclaw/skills", "skills", Some("OpenClaw 的 Skills 目录，用于存放 OpenClaw Agent 可使用的技能。")),
-    ("Kimi Code", "kimi-code", "~/.agents/skills", "skills", Some("Kimi Code CLI 的 Skills 目录，对应其默认用户级 skills 路径 ~/.agents/skills。")),
-    ("Generic Agents", "", "~/.agents/skills", "skills", Some("通用 Agent Skills 目录，覆盖 Cursor/Gemini/Trae/OpenCode 等本机没有独立 skills 目录的 Agent 工具。")),
-    ("Generic Skills", "", "~/.skills", "skills", Some("用户全局 Skills 目录，作为跨 Agent 共享的兜底技能仓库。")),
-];
+/// P3-2: built-in agent presets, derived from the static `npx skills` agent
+/// matrix plus the resource directories the app has always scanned. PRD-06:
+/// the entity is the Agent (name + source), not the directory; `scan_and_persist_agents`
+/// groups rows by `(name, source)` so one tool produces one Agent row with its dirs.
+///
+/// Skills dirs come straight from the matrix (77 agents; each contributes its
+/// global dir when it has one). On top of those:
+/// - `~/.agents/skills` is the npx CLI's GLOBAL CANONICAL store (project scope
+///   uses `./.agents/skills`, which the per-project index scans) — attributed
+///   to the synthetic "Universal Agents" row rather than any single tool;
+/// - non-skills resource dirs (rules/commands/instructions/plugins) keep being
+///   scanned for the Agents page and collection;
+/// - `~/.skills` stays the generic fallback.
+fn built_in_presets() -> Vec<(String, String, String, String, Option<String>)> {
+    let mut rows: Vec<(String, String, String, String, Option<String>)> = Vec::new();
+
+    // Canonical store first, so it wins the directory-dedup against any agent
+    // whose own global dir happens to be `~/.agents/skills` (e.g. Cline).
+    rows.push((
+        "Universal Agents".into(),
+        "universal".into(),
+        "~/.agents/skills".into(),
+        "skills".into(),
+        Some("npx skills 的全局 canonical 目录（`skills add -g` 的实际落盘处，其他 agent 目录是指向这里的链接）。".into()),
+    ));
+
+    for a in crate::agents_table::AGENTS {
+        if let Some(g) = a.global_dir {
+            rows.push((
+                a.display_name.to_string(),
+                a.key.to_string(),
+                g.to_string(),
+                "skills".into(),
+                Some(format!("{} 的全局 Skills 目录（npx skills 支持的 agent）。", a.display_name)),
+            ));
+        }
+    }
+
+    // Non-skills resource directories (scanned as before; never install targets).
+    rows.push(("Cursor".into(), "cursor".into(), "~/.cursor/rules".into(), "rules".into(),
+        Some("Cursor 编辑器的 Rules 目录，用于存放全局或项目级规则文件。".into())));
+    rows.push(("Claude Code".into(), "claude-code".into(), "~/.claude/commands".into(), "commands".into(),
+        Some("Anthropic Claude Code 的 Commands 目录，用于存放自定义斜杠命令。".into())));
+    rows.push(("Codex".into(), "codex".into(), "~/.codex/instructions".into(), "instructions".into(),
+        Some("OpenAI Codex CLI 的 Instructions 目录，用于存放系统级指令。".into())));
+    rows.push(("ZCode".into(), "zcode".into(), "~/.zcode/cli/plugins".into(), "skills".into(),
+        Some("ZCode 的插件目录，用于存放 ZCode Agent 可识别的技能。".into())));
+    // Generic fallback.
+    rows.push(("Generic Skills".into(), "".into(), "~/.skills".into(), "skills".into(),
+        Some("用户全局 Skills 目录，作为跨 Agent 共享的兜底技能仓库。".into())));
+
+    rows
+}
 
 /// Expand `~` or `~/` to home directory.
 pub fn expand_path(path: &str) -> PathBuf {
@@ -92,8 +121,8 @@ pub fn discover_agents() -> Vec<Agent> {
         std::collections::HashMap::new();
     // (name, source) -> (dir, description) — one Agent per tool.
     let mut tools: BTreeMap<(String, String), (PathBuf, Option<String>)> = BTreeMap::new();
-    for (name, source, rule, _role, description) in PRESETS {
-        let path = expand_path(rule);
+    for (name, source, rule, _role, description) in built_in_presets() {
+        let path = expand_path(&rule);
         if !(path.exists() && path.is_dir()) {
             continue;
         }
@@ -114,7 +143,7 @@ pub fn discover_agents() -> Vec<Agent> {
                         (
                             name.to_string(),
                             source.to_string(),
-                            description.map(|s| s.to_string()),
+                            description.clone(),
                         ),
                     );
                     // Drop the previously inserted tool entry that pointed here.
@@ -130,7 +159,7 @@ pub fn discover_agents() -> Vec<Agent> {
                     (
                         name.to_string(),
                         source.to_string(),
-                        description.map(|s| s.to_string()),
+                        description.clone(),
                     ),
                 );
             }
@@ -138,7 +167,7 @@ pub fn discover_agents() -> Vec<Agent> {
         let key = (name.to_string(), source.to_string());
         tools
             .entry(key)
-            .or_insert_with(|| (path.clone(), description.map(|s| s.to_string())));
+            .or_insert_with(|| (path.clone(), description.clone()));
     }
 
     tools

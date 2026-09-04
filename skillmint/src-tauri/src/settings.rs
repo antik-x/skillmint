@@ -140,6 +140,26 @@ pub struct Settings {
     /// and written to the platform credential store (macOS Keychain) on load/save.
     #[serde(default)]
     pub ai: AiConfig,
+    /// P3: npm package spec invoked as `npx -y <spec>`. Default `skills@latest`;
+    /// pin (e.g. `skills@1.5.23`) when reproducibility matters.
+    #[serde(default = "default_npx_package")]
+    pub npx_package: String,
+    /// P3: override for the skills.sh search API base URL (China acceleration;
+    /// empty = default `https://skills.sh`).
+    #[serde(default)]
+    pub skills_api_url: String,
+    /// P3: proxy URL injected as HTTPS_PROXY/HTTP_PROXY/ALL_PROXY into npx
+    /// child processes (covers the CLI's git-clone download path).
+    #[serde(default)]
+    pub proxy_env: String,
+    /// P3: inject DISABLE_TELEMETRY=1 + DO_NOT_TRACK=1 into npx (default true,
+    /// matching the app's local-first stance).
+    #[serde(default = "default_true")]
+    pub disable_telemetry: bool,
+    /// P3: explicit node bin dir (or node binary path). GUI-launched apps get a
+    /// minimal PATH; this overrides the auto-discovery chain.
+    #[serde(default)]
+    pub node_path_override: String,
 }
 
 /// One configured LLM endpoint. Supports chat and/or embedding capabilities.
@@ -338,6 +358,23 @@ fn default_theme() -> String {
     "system".to_string()
 }
 
+/// Public aliases used by `models::AppSettings`'s serde default attributes.
+pub fn default_npx_package_pub() -> String {
+    default_npx_package()
+}
+
+pub fn default_true_pub() -> bool {
+    default_true()
+}
+
+fn default_npx_package() -> String {
+    "skills@latest".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
 /// Public alias used by `models::AppSettings`'s serde default attribute.
 pub fn default_theme_pub() -> String {
     default_theme()
@@ -361,6 +398,11 @@ impl Default for Settings {
             remote_enabled: false,
             theme: default_theme(),
             ai: AiConfig::default(),
+            npx_package: default_npx_package(),
+            skills_api_url: String::new(),
+            proxy_env: String::new(),
+            disable_telemetry: default_true(),
+            node_path_override: String::new(),
         }
     }
 }

@@ -144,6 +144,22 @@ pub struct AppSettings {
     /// PRD-08 §3.6: optional LLM config for classification + daily summaries.
     #[serde(default)]
     pub ai: crate::settings::AiConfig,
+    /// P3: npm package spec invoked as `npx -y <spec>`; default `skills@latest`,
+    /// pin a version (e.g. `skills@1.5.23`) for reproducibility.
+    #[serde(default = "crate::settings::default_npx_package_pub")]
+    pub npx_package: String,
+    /// P3: override for the skills.sh search API base URL (China acceleration).
+    #[serde(default)]
+    pub skills_api_url: String,
+    /// P3: proxy URL injected as HTTPS_PROXY/HTTP_PROXY/ALL_PROXY into npx.
+    #[serde(default)]
+    pub proxy_env: String,
+    /// P3: inject DISABLE_TELEMETRY=1 into npx (default on — local-first).
+    #[serde(default = "crate::settings::default_true_pub")]
+    pub disable_telemetry: bool,
+    /// P3: explicit node bin dir (or node binary path) for GUI PATH limitations.
+    #[serde(default)]
+    pub node_path_override: String,
 }
 
 fn default_project_skill_dir() -> String {

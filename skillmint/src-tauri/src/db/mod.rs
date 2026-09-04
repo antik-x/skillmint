@@ -23,6 +23,7 @@ mod bundles;
 mod collection;
 mod data_management;
 mod discovery;
+pub mod index_store;
 mod kg;
 mod llm;
 mod projects;
@@ -709,6 +710,42 @@ impl Db {
             );
             CREATE INDEX IF NOT EXISTS idx_trash_items_expires ON trash_items(expires_at);
             CREATE INDEX IF NOT EXISTS idx_trash_items_deleted ON trash_items(deleted_at DESC);
+
+            -- P3-3: rebuildable skill index — the app's read model over on-disk
+            -- truth (npx locks + agent dirs + private hubs). Pure cache: safe to
+            -- drop and rebuild at any time. `project_key` = "-" for the global
+            -- scope, else the project root; status is computed in
+            -- `index_store::replace_skill_index` by diffing content hashes
+            -- against the previous scan.
+            CREATE TABLE IF NOT EXISTS skill_index (
+                project_key TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                name TEXT NOT NULL,
+                managed_by TEXT NOT NULL,
+                path TEXT NOT NULL,
+                skill_md_path TEXT,
+                source TEXT,
+                source_url TEXT,
+                source_type TEXT,
+                ref_spec TEXT,
+                hash TEXT,
+                content_hash TEXT,
+                prev_content_hash TEXT,
+                status TEXT NOT NULL DEFAULT 'ok',
+                agents_json TEXT NOT NULL DEFAULT '[]',
+                description TEXT,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (project_key, scope, name, path)
+            );
+            CREATE INDEX IF NOT EXISTS idx_skill_index_scope ON skill_index(project_key, scope);
+
+            -- P3-3: refresh bookkeeping — the auto tick rebuilds only when this
+            -- fingerprint (lock/canonical/hub mtimes) actually changed.
+            CREATE TABLE IF NOT EXISTS skill_index_meta (
+                project_key TEXT PRIMARY KEY,
+                fingerprint TEXT NOT NULL,
+                rebuilt_at INTEGER NOT NULL
+            );
             "#,
         )?;
 
