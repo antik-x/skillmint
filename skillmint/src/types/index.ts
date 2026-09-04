@@ -167,6 +167,16 @@ export interface AppSettings {
   ai: AiConfig;
   /** M1: appearance theme. system follows OS preference. */
   theme: "light" | "dark" | "system";
+  /** P3: npm package spec invoked as `npx -y <spec>`; default `skills@latest`. */
+  npx_package?: string;
+  /** P3: mirror for the skills.sh search API (China acceleration). */
+  skills_api_url?: string;
+  /** P3: proxy URL injected into npx child processes. */
+  proxy_env?: string;
+  /** P3: inject DISABLE_TELEMETRY=1 into npx (default true). */
+  disable_telemetry?: boolean;
+  /** P3: explicit node bin dir for GUI PATH limitations. */
+  node_path_override?: string;
 }
 
 /** PRD-08: optional AI/LLM configuration (OpenAI-compatible or Anthropic). */

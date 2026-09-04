@@ -4,7 +4,7 @@ import { useAppStore, type SkillLibrarySubTab } from "../stores/appStore";
 import { SkeletonCard } from "../components/ui/Skeleton";
 import { cn } from "../components/ui/utils";
 
-const Skills = lazy(() => import("./Skills"));
+const Skills = lazy(() => import("./InstalledSkills"));
 const SkillBundles = lazy(() => import("./SkillBundles"));
 const KnowledgeGraph = lazy(() => import("./KnowledgeGraph"));
 const Discover = lazy(() => import("./Discover"));

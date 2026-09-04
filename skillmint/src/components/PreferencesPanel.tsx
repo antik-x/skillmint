@@ -5,16 +5,28 @@ import { GitBranch } from "lucide-react";
 import { useAppStore } from "../stores/appStore";
 import { showError, showInfo, showSuccess } from "../stores/toastStore";
 import { Button } from "./ui/Button";
+import { getNpxEnv, type NodeEnvInfo } from "../lib/npxskills";
 import type { AppSettings, RestoreSummary, SnapshotInfo, GitCommit } from "../types";
 
 export default function PreferencesPanel() {
   const { settings, setSettings } = useAppStore();
   const [form, setForm] = useState<AppSettings>(settings);
   const [saving, setSaving] = useState(false);
+  const [nodeEnv, setNodeEnv] = useState<NodeEnvInfo | null>(null);
 
   useEffect(() => {
     setForm(settings);
   }, [settings]);
+
+  const refreshNodeEnv = useCallback(() => {
+    getNpxEnv()
+      .then(setNodeEnv)
+      .catch(() => setNodeEnv(null));
+  }, []);
+
+  useEffect(() => {
+    refreshNodeEnv();
+  }, [refreshNodeEnv]);
 
   const handleSave = async () => {
     if (saving) return;
@@ -97,6 +109,82 @@ export default function PreferencesPanel() {
             type="checkbox"
             checked={form.show_dock_icon}
             onChange={(e) => setForm({ ...form, show_dock_icon: e.target.checked })}
+            className="h-5 w-5 accent-accent"
+          />
+        </div>
+
+        <div className="rounded-lg border border-[var(--border-prominent)] p-4">
+          <div className="font-medium">Node 运行时（npx skills 依赖，需 ≥ v22.20）</div>
+          {nodeEnv ? (
+            nodeEnv.problem ? (
+              <div className="mt-1 text-xs text-danger">{nodeEnv.problem}</div>
+            ) : (
+              <div className="mt-1 text-xs text-tertiary">
+                node {nodeEnv.node_version} · {nodeEnv.bin_dir}
+              </div>
+            )
+          ) : (
+            <div className="mt-1 text-xs text-tertiary">检测中…</div>
+          )}
+        </div>
+
+        <div>
+          <label className="mb-2 block text-sm text-secondary">skills CLI 版本（npm 包规格）</label>
+          <input
+            type="text"
+            value={form.npx_package ?? "skills@latest"}
+            onChange={(e) => setForm({ ...form, npx_package: e.target.value })}
+            placeholder="skills@latest 或固定版本 skills@1.5.23"
+            className="w-full rounded-lg border border-[var(--border-prominent)] bg-primary px-4 py-2 text-primary focus:border-accent focus:outline-none"
+          />
+          <p className="mt-1 text-xs text-tertiary">app 的安装/更新/卸载都通过 `npx -y &lt;此规格&gt;` 调用真实 CLI。</p>
+        </div>
+
+        <div>
+          <label className="mb-2 block text-sm text-secondary">skills 搜索源镜像（SKILLS_API_URL）</label>
+          <input
+            type="text"
+            value={form.skills_api_url ?? ""}
+            onChange={(e) => setForm({ ...form, skills_api_url: e.target.value })}
+            placeholder="留空使用 https://skills.sh；国内可填可达镜像"
+            className="w-full rounded-lg border border-[var(--border-prominent)] bg-primary px-4 py-2 text-primary focus:border-accent focus:outline-none"
+          />
+          <p className="mt-1 text-xs text-tertiary">
+            影响「发现」页搜索。安装下载走 git，受下方代理影响；api.github.com 不可达时 CLI 会自动回退 git clone。
+          </p>
+        </div>
+
+        <div>
+          <label className="mb-2 block text-sm text-secondary">网络代理（注入 HTTPS_PROXY/HTTP_PROXY/ALL_PROXY）</label>
+          <input
+            type="text"
+            value={form.proxy_env ?? ""}
+            onChange={(e) => setForm({ ...form, proxy_env: e.target.value })}
+            placeholder="例如 http://127.0.0.1:7890"
+            className="w-full rounded-lg border border-[var(--border-prominent)] bg-primary px-4 py-2 text-primary focus:border-accent focus:outline-none"
+          />
+        </div>
+
+        <div>
+          <label className="mb-2 block text-sm text-secondary">node 路径覆盖（可选）</label>
+          <input
+            type="text"
+            value={form.node_path_override ?? ""}
+            onChange={(e) => setForm({ ...form, node_path_override: e.target.value })}
+            placeholder="GUI 启动时 PATH 受限；可填 node bin 目录，如 ~/.nvm/versions/node/v22.20.0/bin"
+            className="w-full rounded-lg border border-[var(--border-prominent)] bg-primary px-4 py-2 text-primary focus:border-accent focus:outline-none"
+          />
+        </div>
+
+        <div className="flex items-center justify-between rounded-lg border border-[var(--border-prominent)] p-4">
+          <div>
+            <div className="font-medium">允许 npx skills 遥测</div>
+            <div className="text-xs text-tertiary">默认关闭（注入 DISABLE_TELEMETRY=1），符合本地优先理念</div>
+          </div>
+          <input
+            type="checkbox"
+            checked={!form.disable_telemetry}
+            onChange={(e) => setForm({ ...form, disable_telemetry: !e.target.checked })}
             className="h-5 w-5 accent-accent"
           />
         </div>

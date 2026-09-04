@@ -1,6 +1,14 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "../lib/invoke";
 import {
+  npxInstall,
+  previewInstallCommand,
+  skillsSearch,
+  getAgentsTable,
+  type AgentDef,
+  type SearchHit,
+} from "../lib/npxskills";
+import {
   BarChart3,
   CheckCircle2,
   Folder,
@@ -123,6 +131,8 @@ function SearchTab({ sources }: { sources: Source[] }) {
   const [previewing, setPreviewing] = useState<SearchResult | null>(null);
   const [previewBody, setPreviewBody] = useState("");
   const [installTarget, setInstallTarget] = useState<SearchResult | null>(null);
+  // P3: skills.sh registry hits, installed through `npx skills add` directly.
+  const [hubHits, setHubHits] = useState<SearchHit[]>([]);
 
   // SPEC-I5: carry a search term from the inbox capability-gap card.
   useEffect(() => {
@@ -135,8 +145,12 @@ function SearchTab({ sources }: { sources: Source[] }) {
   const runSearch = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await invoke<SearchResult[]>("search_all", { query });
+      const [r, hits] = await Promise.all([
+        invoke<SearchResult[]>("search_all", { query }).catch(() => [] as SearchResult[]),
+        skillsSearch(query).catch(() => [] as SearchHit[]),
+      ]);
       setResults(r);
+      setHubHits(hits);
     } catch (err) {
       showError(err, { context: "搜索" });
     } finally {
@@ -171,6 +185,38 @@ function SearchTab({ sources }: { sources: Source[] }) {
     } catch (err) {
       const msg = typeof err === "string" ? err : String(err);
       setPreviewBody(`预览失败：${msg}`);
+    }
+  };
+
+  // P3: registry hits install straight through the CLI into every detected
+  // agent's global dir — the equivalent command is confirmed first (Mole-style).
+  const installHubHit = async (hit: SearchHit) => {
+    const req = {
+      source: hit.source,
+      skills: [hit.name],
+      agents: [] as string[],
+      global: true,
+      copy: false,
+      project_root: null as string | null,
+    };
+    try {
+      const cmd = await previewInstallCommand(req);
+      if (!window.confirm(`将运行：\n${cmd}\n\n安装到本机检测到的全部 agent（全局）。继续？`)) {
+        return;
+      }
+      const res = await npxInstall(req);
+      if (res.run.success) {
+        const risky = res.safety.filter((sf) => sf.findings > 0);
+        showSuccess(
+          risky.length > 0
+            ? `已安装 ${hit.name}；注意：SKILL.md 含 ${risky[0].findings} 处需确认的指令`
+            : `已安装 ${hit.name}`,
+        );
+      } else {
+        showError(`安装失败（退出码 ${res.run.exit_code ?? "?"}）`);
+      }
+    } catch (err) {
+      showError(err, { context: "npx 安装" });
     }
   };
 
@@ -221,7 +267,32 @@ function SearchTab({ sources }: { sources: Source[] }) {
         </Section>
       )}
 
-      {!loading && local.length === 0 && remote.length === 0 && (
+      {hubHits.length > 0 && (
+        <Section title={<><Globe className="inline h-4 w-4 mr-1.5" />skills.sh 匹配 ({hubHits.length})</>}>
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+            {hubHits.map((h) => (
+              <div key={`${h.source}/${h.name}`} className="rounded-lg border border-[var(--border-subtle)] bg-secondary p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold text-primary">{h.name}</div>
+                    <div className="mt-0.5 truncate text-xs text-tertiary">
+                      {h.source} · {h.installs} 次安装
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => void installHubHit(h)}
+                    className="shrink-0 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-primary hover:brightness-110"
+                  >
+                    npx 安装
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {!loading && local.length === 0 && remote.length === 0 && hubHits.length === 0 && (
         <div className="py-12 text-center text-sm text-tertiary">
           未找到匹配的 Skill。试试换个关键词，或连接更多远程源。
         </div>
@@ -383,12 +454,10 @@ function InstallDialog({ target, onClose }: { target: SearchResult; onClose: () 
   const [installing, setInstalling] = useState(false);
 
   useEffect(() => {
-    invoke<Agent[]>("get_agents")
-      .then((a) => {
-        setAgents(a);
-        // Default-select enabled agents.
-        setSelectedAgents(new Set(a.filter((x) => x.is_enabled).map((x) => x.id)));
-      })
+    // P3: agent selection uses the npx skills matrix keys (what the CLI's -a
+    // flag expects). Empty selection = every agent detected on this machine.
+    getAgentsTable()
+      .then((table: AgentDef[]) => setAgents(table as unknown as Agent[]))
       .catch((err) => {
         const msg = typeof err === "string" ? err : String(err);
         showError(`加载 Agent 列表失败：${msg}`);
@@ -429,24 +498,33 @@ function InstallDialog({ target, onClose }: { target: SearchResult; onClose: () 
     }
     setInstalling(true);
     try {
-      const confirmedRisks = scan && !scan.clean ? scan.findings.map((f) => f.rule) : [];
-      const res = await invoke<{ synced_agents: string[]; skipped_agents?: string[] }>(
-        "install_remote_skill",
-        {
-          sourceId: target.source_id,
-          skillPath: target.skill_path,
-          agentIds: Array.from(selectedAgents),
-          mode,
-          confirmedRisks,
-        }
-      );
+      // P3: single install path — resolve the source's git URL and let the
+      // `skills` CLI do the install into agent global dirs.
+      const sources = await invoke<Source[]>("get_sources");
+      const url = sources.find((src) => src.id === target.source_id)?.url;
+      if (!url) {
+        showError("找不到源 URL，无法通过 npx skills 安装");
+        return;
+      }
+      const res = await npxInstall({
+        source: url,
+        skills: [target.skill_name],
+        agents: Array.from(selectedAgents),
+        global: true,
+        copy: mode === "copy",
+        project_root: null,
+      });
+      if (!res.run.success) {
+        showError(`安装失败（退出码 ${res.run.exit_code ?? "?"}）`);
+        return;
+      }
       await loadData();
-      const skipped = res.skipped_agents ?? [];
-      const msg =
-        `已安装「${target.skill_name}」并同步到 ${res.synced_agents.length} 个 Agent` +
-        (res.synced_agents.length === 0 ? "（未选 Agent，仅入库）" : "") +
-        (skipped.length > 0 ? `；${skipped.length} 个 Agent 已存在同名，已跳过：${skipped.join("、")}` : "");
-      showSuccess(msg);
+      const risky = res.safety.filter((sf) => sf.findings > 0);
+      showSuccess(
+        risky.length > 0
+          ? `已安装「${target.skill_name}」；注意：SKILL.md 含 ${risky[0].findings} 处需确认的指令`
+          : `已安装「${target.skill_name}」`,
+      );
       onClose();
     } catch (err) {
       const msg = typeof err === "string" ? err : String(err);
@@ -830,11 +908,9 @@ function InstallMetaDialog({
   const [installing, setInstalling] = useState(false);
 
   useEffect(() => {
-    invoke<Agent[]>("get_agents")
-      .then((a) => {
-        setAgents(a);
-        setSelectedAgents(new Set(a.filter((x) => x.is_enabled).map((x) => x.id)));
-      })
+    // P3: npx agent keys; empty selection = every detected agent.
+    getAgentsTable()
+      .then((table: AgentDef[]) => setAgents(table as unknown as Agent[]))
       .catch((err) => {
         const msg = typeof err === "string" ? err : String(err);
         showError(`加载 Agent 列表失败：${msg}`);
@@ -857,23 +933,32 @@ function InstallMetaDialog({
   const doInstall = async () => {
     setInstalling(true);
     try {
-      const confirmedRisks = scan && !scan.clean ? scan.findings.map((f) => f.rule) : [];
-      const res = await invoke<{ synced_agents: string[]; skipped_agents?: string[] }>(
-        "install_remote_skill",
-        {
-          sourceId,
-          skillPath: meta.skill_path,
-          agentIds: Array.from(selectedAgents),
-          mode,
-          confirmedRisks,
-        }
-      );
+      // P3: single install path via the `skills` CLI.
+      const sources = await invoke<Source[]>("get_sources");
+      const url = sources.find((src) => src.id === sourceId)?.url;
+      if (!url) {
+        showError("找不到源 URL，无法通过 npx skills 安装");
+        return;
+      }
+      const res = await npxInstall({
+        source: url,
+        skills: [meta.skill_name],
+        agents: Array.from(selectedAgents),
+        global: true,
+        copy: mode === "copy",
+        project_root: null,
+      });
+      if (!res.run.success) {
+        showError(`安装失败（退出码 ${res.run.exit_code ?? "?"}）`);
+        return;
+      }
       await loadData();
-      const skipped = res.skipped_agents ?? [];
-      const msg =
-        `已安装「${meta.skill_name}」并同步到 ${res.synced_agents.length} 个 Agent` +
-        (skipped.length > 0 ? `；${skipped.length} 个 Agent 已存在同名，已跳过：${skipped.join("、")}` : "");
-      showSuccess(msg);
+      const risky = res.safety.filter((sf) => sf.findings > 0);
+      showSuccess(
+        risky.length > 0
+          ? `已安装「${meta.skill_name}」；注意：SKILL.md 含 ${risky[0].findings} 处需确认的指令`
+          : `已安装「${meta.skill_name}」`,
+      );
       onClose();
     } catch (err) {
       const msg = typeof err === "string" ? err : String(err);
