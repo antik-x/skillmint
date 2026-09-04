@@ -25,6 +25,7 @@ pub const PROJECT_CANONICAL_DIR: &str = ".agents/skills";
 /// git merges); `sourceType` distinguishes github / node_modules / local / ….
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // lock files are parsed in full; some fields are informational only
 pub struct ProjectLockEntry {
     #[serde(default)]
     pub source: String,
@@ -61,6 +62,7 @@ where
 /// One entry of the global lock.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // lock files are parsed in full; some fields are informational only
 pub struct GlobalLockEntry {
     #[serde(default)]
     pub source: String,

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "../lib/invoke";
+import { rebuildSkillIndex } from "../lib/npxskills";
 import {
   BarChart3,
   Bot,
@@ -179,18 +180,18 @@ function useCommandItems(
       {
         id: "action-sync-all",
         type: "action",
-        title: "同步全部",
-        subtitle: "立即执行 sync_all_command",
+        title: "刷新技能索引",
+        subtitle: "从 npx locks / agent 目录 / 私有 Hub 重建索引",
         icon: RefreshCw,
         shortcut: "mod+shift+s",
         action: async () => {
           try {
-            await invoke("sync_all_command");
+            const summary = await rebuildSkillIndex(null);
             await loadData();
-            showSuccess("同步完成");
+            showSuccess(`索引已刷新：${summary.total} 项`);
           } catch (err) {
             const msg = typeof err === "string" ? err : String(err);
-            showError(`同步失败：${msg}`);
+            showError(`刷新失败：${msg}`);
           } finally {
             onClose();
           }

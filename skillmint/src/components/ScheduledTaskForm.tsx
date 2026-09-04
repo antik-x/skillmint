@@ -19,7 +19,6 @@ const TASK_KIND_OPTIONS: { value: TaskKind; label: string }[] = [
   { value: "generate_knowledge_graph", label: "生成知识图谱" },
   { value: "generate_daily_summary", label: "生成每日 AI 摘要" },
   { value: "sync_remote_sources", label: "刷新远程源与 Git 拉取" },
-  { value: "backup_center_repo", label: "备份 Center Repo" },
 ];
 
 const DEFAULTS: Record<

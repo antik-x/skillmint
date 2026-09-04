@@ -119,6 +119,8 @@ fn dirs_equivalent(a: &Path, b: &Path) -> bool {
 
 /// F6: check whether the center repo is missing/empty while the DB still has
 /// skills. Used by the frontend to show a recovery banner.
+/// Retired as a command in P3-6b; kept as the repair-flow test oracle.
+#[allow(dead_code)]
 pub(crate) fn check_repo_integrity_inner(
     db: &crate::db::Db,
     settings: &crate::settings::Settings,
@@ -142,27 +144,6 @@ pub(crate) fn check_repo_integrity_inner(
         }
     }
     Ok(RepoIntegrity::Healthy)
-}
-
-#[tauri::command]
-pub fn check_repo_integrity(state: State<'_, AppState>) -> Result<RepoIntegrity, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    let settings = state.settings.lock().map_err(|e| e.to_string())?;
-    check_repo_integrity_inner(&db, &settings)
-}
-
-/// P1-4: rename a skill end-to-end — center directory, SKILL.md front matter,
-/// per-agent links/dirs, and the DB row (id preserved, single transaction).
-/// Follows the runbook in docs/OPTIMIZATION-2026-07.md 附 A.
-#[tauri::command]
-pub fn rename_skill(
-    old_name: String,
-    new_name: String,
-    state: State<'_, AppState>,
-) -> Result<Skill, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    let settings = state.settings.lock().map_err(|e| e.to_string())?;
-    rename_skill_impl(&db, &settings, &old_name, &new_name).map_err(|e| e.to_string())
 }
 
 /// Undo record for one agent-side mutation performed during a rename.

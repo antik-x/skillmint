@@ -76,8 +76,8 @@ describe("GlobalShortcuts", () => {
     expect(useAppStore.getState().sidebarVisible).toBe(false);
   });
 
-  it("syncs all on mod+shift+s", async () => {
-    vi.mocked(invoke).mockResolvedValueOnce({});
+  it("rebuilds the skill index on mod+shift+s (P3: sync engine retired)", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ total: 3 });
     render(<GlobalShortcuts onTogglePalette={vi.fn()} onOpenHelp={vi.fn()} />);
 
     const mod = isMac() ? "Meta" : "Control";
@@ -92,7 +92,7 @@ describe("GlobalShortcuts", () => {
     document.body.dispatchEvent(event);
 
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(invoke).toHaveBeenCalledWith("sync_all_command");
+    expect(invoke).toHaveBeenCalledWith("rebuild_skill_index", { projectRoot: null });
   });
 
   it("opens help on mod+/", () => {

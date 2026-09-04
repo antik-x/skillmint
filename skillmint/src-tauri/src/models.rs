@@ -33,13 +33,6 @@ pub struct Skill {
     pub status: SkillStatus,
 }
 
-/// PRD-09: payload for reading/writing SKILL.md content through the built-in editor.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SkillContent {
-    pub frontmatter: serde_json::Value,
-    pub body: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Agent {
     pub id: String,
@@ -156,9 +149,6 @@ pub struct AppSettings {
     pub node_path_override: String,
 }
 
-fn default_project_skill_dir() -> String {
-    ".skillmint/skills".to_string()
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncFailure {
@@ -186,6 +176,7 @@ pub struct SyncAllResult {
 /// F6: result of checking whether the center repo is healthy.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)] // retired with the center repo; repair tests use it as an oracle
 pub enum RepoIntegrity {
     /// Center repo exists and is non-empty, or the DB has no skills yet.
     Healthy,
@@ -670,18 +661,6 @@ pub struct ResolvedSkill {
     pub pinned_version: Option<String>,
 }
 
-/// One version of a multi-version skill (PRD-01 patch FR-F).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct SkillVersion {
-    /// "latest" or "v1"/"v2"/...
-    pub version: String,
-    pub created_at: u64,
-    /// Optional human note attached at snapshot time (PRD §4.5c/§4.5d).
-    pub note: Option<String>,
-    /// Project names whose bindings pin to this version (PRD §4.5d `is_pinned_by`).
-    pub pinned_by: Vec<String>,
-}
-
 /// Strategy for resolving a content diff (PRD-01 patch FR-F §4.5c).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -715,15 +694,6 @@ pub struct ResolveResult {
     pub project_path: String,
     /// Path of the center latest after resolution.
     pub latest_path: String,
-}
-
-/// Result of rolling a skill back to a historical version (superpowers spec G2).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct RollbackResult {
-    /// The version that was created from the pre-rollback `latest` (e.g. "v3").
-    pub saved_as: String,
-    /// The target version that `latest` now points to (e.g. "v2").
-    pub rolled_to: String,
 }
 
 // -----------------------------------------------------------------------------
@@ -906,17 +876,6 @@ pub struct SearchResult {
     /// matched term wrapped in «» so the frontend can render it as a highlight.
     #[serde(default)]
     pub snippet: Option<String>,
-}
-
-/// Outcome of installing a remote skill (PRD-07 §3.2).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InstallRemoteResult {
-    pub skill: Skill,
-    pub synced_agents: Vec<String>,
-    /// Agent names where a same-named skill already existed and was skipped
-    /// (not overwritten). Surfaced to the user so a partial sync isn't silent.
-    #[serde(default)]
-    pub skipped_agents: Vec<String>,
 }
 
 // =============================================================================

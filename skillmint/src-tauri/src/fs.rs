@@ -230,21 +230,6 @@ pub fn resolve_symlink(path: &Path) -> PathBuf {
     }
 }
 
-/// Move a directory into center repo, backing up conflicts with `.backup` suffix.
-pub fn move_into_center(source: &Path, center_path: &Path) -> Result<PathBuf> {
-    let name = source.file_name().context("source has no file name")?;
-    let dest = center_path.join(name);
-    if dest.exists() {
-        let backup = center_path.join(format!("{}.backup", name.to_string_lossy()));
-        if backup.exists() {
-            fs::remove_dir_all(&backup)?;
-        }
-        fs::rename(&dest, &backup)?;
-    }
-    fs::rename(source, &dest)?;
-    Ok(dest)
-}
-
 // =============================================================================
 // PRD-01 patch FR-C/FR-F: multi-version skill helpers
 // =============================================================================
@@ -283,6 +268,9 @@ pub const VERSION_NOTE_FILE: &str = ".version-note";
 
 /// List all versions of a skill (latest first, then v<x> descending).
 /// Each entry: (version label, mtime, optional note read from sidecar).
+/// P3-6b: the version UI is gone; these primitives remain for the flat→latest
+/// migration layout and fs-level unit tests.
+#[allow(dead_code)]
 pub fn list_skill_versions(skill_root: &Path) -> Result<Vec<(String, u64, Option<String>)>> {
     let mut out = Vec::new();
     if !skill_root.is_dir() {
@@ -344,6 +332,7 @@ pub fn write_version_note(version_dir: &Path, note: Option<&str>) -> Result<()> 
 }
 
 /// Numeric sort key: latest = i64::MAX, vN = N (so latest sorts first when desc).
+#[allow(dead_code)]
 fn version_sort_key(label: &str) -> i64 {
     if label == LATEST_VERSION {
         i64::MAX
@@ -354,6 +343,7 @@ fn version_sort_key(label: &str) -> i64 {
     }
 }
 
+#[allow(dead_code)]
 fn mtime_secs(meta: &fs::Metadata) -> u64 {
     meta.modified()
         .ok()

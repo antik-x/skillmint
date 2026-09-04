@@ -3361,100 +3361,6 @@ fn test_cmd_install_skill_core_copy_mode() {
     assert!(!dst.is_symlink(), "copy mode must not be a symlink");
 }
 
-#[test]
-fn test_cmd_list_versions_core_flat_and_multiversion() {
-    let (_tmp, db, settings) = setup_test_env();
-    let skill = insert_skill(&db, &settings, "ver-skill", "# x\n");
-
-    // Flat layout -> single implicit latest.
-    let vs = crate::commands::list_versions_core(&db, &skill.id).unwrap();
-    assert_eq!(vs.len(), 1);
-    assert_eq!(vs[0].version, "latest");
-    assert!(vs[0].pinned_by.is_empty());
-
-    // Promote to multi-version with two snapshots.
-    let root = std::path::PathBuf::from(&skill.repo_path);
-    crate::fs::snapshot_version(&root).unwrap();
-    crate::fs::snapshot_version(&root).unwrap();
-
-    let vs = crate::commands::list_versions_core(&db, &skill.id).unwrap();
-    let labels: Vec<&str> = vs.iter().map(|v| v.version.as_str()).collect();
-    assert_eq!(labels, vec!["latest", "v2", "v1"]);
-}
-
-#[test]
-fn test_cmd_resolve_diff_core_versionize_end_to_end() {
-    let (_tmp, db, settings) = setup_test_env();
-    let device = "test-device-0001";
-    let (skill, agent, proj) = setup_install_scenario(&db, &settings, device);
-
-    // Install a symlink first (registers a binding).
-    let created = crate::commands::install_skill_core(
-        &db, device, &skill.id, &proj, &[agent.id.clone()], "symlink",
-    )
-    .unwrap();
-    let binding_id = created[0].id.clone();
-
-    // Diverge the project copy.
-    let project_copy = agent.skill_directory.join(&skill.name);
-    std::fs::remove_file(project_copy.join("SKILL.md")).ok();
-    std::fs::write(project_copy.join("SKILL.md"), "# diverged\n").unwrap();
-
-    // Versionize (with an optional note, PRD §4.5c).
-    let res = crate::commands::resolve_diff_core(
-        &db,
-        &binding_id,
-        "versionize",
-        Some("project-specific variant"),
-    )
-    .unwrap();
-    assert_eq!(res.strategy, "versionize");
-    let new_v = res.new_version.clone().unwrap();
-    assert_eq!(new_v, "v1");
-
-    // Binding pinned to v1 in DB.
-    let fetched = db.get_skill_project_binding(&binding_id).unwrap().unwrap();
-    assert_eq!(fetched.pinned_version.as_deref(), Some("v1"));
-
-    // list_versions now shows v1 with its note + pinned_by containing the project.
-    let vs = crate::commands::list_versions_core(&db, &skill.id).unwrap();
-    let v1 = vs.iter().find(|v| v.version == "v1").unwrap();
-    assert_eq!(v1.note.as_deref(), Some("project-specific variant"));
-    assert!(!v1.pinned_by.is_empty(), "pinned_by must list the project");
-}
-
-#[test]
-fn test_cmd_resolve_diff_core_keep_center_unpins() {
-    let (_tmp, db, settings) = setup_test_env();
-    let device = "test-device-0001";
-    let (skill, agent, proj) = setup_install_scenario(&db, &settings, device);
-
-    let created = crate::commands::install_skill_core(
-        &db, device, &skill.id, &proj, &[agent.id.clone()], "symlink",
-    )
-    .unwrap();
-    let binding_id = created[0].id.clone();
-
-    // Pin it first, then KeepCenter should unpin (follow latest).
-    db.set_binding_pinned_version(&binding_id, Some("v3")).unwrap();
-    assert_eq!(
-        db.get_skill_project_binding(&binding_id)
-            .unwrap()
-            .unwrap()
-            .pinned_version
-            .as_deref(),
-        Some("v3")
-    );
-
-    let res = crate::commands::resolve_diff_core(&db, &binding_id, "keep_center", None).unwrap();
-    assert_eq!(res.strategy, "keep_center");
-    assert!(res.new_version.is_none());
-
-    // Pin cleared.
-    let fetched = db.get_skill_project_binding(&binding_id).unwrap().unwrap();
-    assert!(fetched.pinned_version.is_none());
-}
-
 // =============================================================================
 // PRD-01 patch 二轮补全：note sidecar / pinned_by / KeepProject 留底 tests
 // =============================================================================
@@ -3485,71 +3391,6 @@ fn test_version_note_sidecar_write_and_read() {
     // Empty note clears the sidecar.
     crate::fs::write_version_note(&root.join("v1"), Some("")).unwrap();
     assert!(!root.join("v1").join(crate::fs::VERSION_NOTE_FILE).exists());
-}
-
-#[test]
-fn test_skill_version_pinned_by_lists_project_names() {
-    let (_tmp, db, settings) = setup_test_env();
-    let device = "test-device-0001";
-    let (skill, agent, proj) = setup_install_scenario(&db, &settings, device);
-
-    // Install + versionize so a binding pins to v1.
-    let created =
-        crate::commands::install_skill_core(&db, device, &skill.id, &proj, &[agent.id.clone()], "symlink").unwrap();
-    let binding_id = created[0].id.clone();
-    crate::commands::resolve_diff_core(&db, &binding_id, "versionize", None).unwrap();
-
-    // list_versions_core: v1.pinned_by must contain the project name ("proj-cmd-proj").
-    let vs = crate::commands::list_versions_core(&db, &skill.id).unwrap();
-    let v1 = vs.iter().find(|v| v.version == "v1").unwrap();
-    assert!(
-        v1.pinned_by.iter().any(|n| n.contains("cmd-proj")),
-        "pinned_by should contain the project name, got {:?}",
-        v1.pinned_by
-    );
-    // latest is not pinned by anyone.
-    let latest = vs.iter().find(|v| v.version == "latest").unwrap();
-    assert!(latest.pinned_by.is_empty());
-}
-
-#[test]
-fn test_resolve_diff_core_keep_project_backup_snapshots_old_latest() {
-    let (_tmp, db, settings) = setup_test_env();
-    let device = "test-device-0001";
-    let (skill, agent, proj) = setup_install_scenario(&db, &settings, device);
-
-    // Install a COPY (independent project copy) — KeepProject only makes sense
-    // when the project has a real divergent copy, not a symlink to center.
-    let created =
-        crate::commands::install_skill_core(&db, device, &skill.id, &proj, &[agent.id.clone()], "copy").unwrap();
-    let binding_id = created[0].id.clone();
-
-    // Diverge project copy (now a real independent directory).
-    let project_copy = agent.skill_directory.join(&skill.name);
-    std::fs::remove_file(project_copy.join("SKILL.md")).ok();
-    std::fs::write(project_copy.join("SKILL.md"), "# diverged\n").unwrap();
-
-    // keep_project_backup: old latest should be snapshotted before rebase.
-    let res = crate::commands::resolve_diff_core(&db, &binding_id, "keep_project_backup", None).unwrap();
-    assert_eq!(res.strategy, "keep_project_backup");
-    // A backup version was created (v1 holds the OLD latest content).
-    let backup = res.new_version.expect("backup version must be created");
-
-    let skill_root = std::path::PathBuf::from(&skill.repo_path);
-    assert!(skill_root.join(&backup).is_dir(), "backup dir must exist");
-    // latest now holds the diverged (project) content.
-    assert_eq!(
-        std::fs::read_to_string(skill_root.join("latest").join("SKILL.md")).unwrap(),
-        "# diverged\n"
-    );
-    // backup holds the OLD center content ("# center\n").
-    assert_eq!(
-        std::fs::read_to_string(skill_root.join(&backup).join("SKILL.md")).unwrap(),
-        "# center\n"
-    );
-    // KeepProject is a merge -> pin cleared.
-    let fetched = db.get_skill_project_binding(&binding_id).unwrap().unwrap();
-    assert!(fetched.pinned_version.is_none());
 }
 
 // =============================================================================
@@ -4977,10 +4818,82 @@ fn create_mock_state(tmp: &tempfile::TempDir, settings: &Settings) -> crate::App
 
 mod c3_trash {
     use super::*;
-    use crate::commands::{
-        drop_existing_skill_to_trash, purge_trash_item_impl, remove_skill_impl,
-        restore_trash_item_impl,
-    };
+    use crate::commands::{drop_existing_skill_to_trash, purge_trash_item_impl, restore_trash_item_impl};
+
+    /// P3-6b: `remove_skill` (and its impl) was a legacy center-repo command and
+    /// is gone from the command surface; the trash restore/purge machinery is
+    /// still live (TrashPanel), so tests seed trash through this local fixture
+    /// that mirrors the on-disk snapshot + metadata shape exactly.
+    fn remove_skill_impl(
+        db: &crate::db::Db,
+        settings: &Settings,
+        skill_id: &str,
+    ) -> Result<i64, String> {
+        let skill = db
+            .get_skills()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|s| s.id == skill_id)
+            .ok_or("Skill not found".to_string())?;
+
+        let targets = db.get_sync_targets().map_err(|e| e.to_string())?;
+        let agents = db.get_agents().map_err(|e| e.to_string())?;
+
+        let trash_root = settings
+            .center_repo
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("trash");
+        let now = current_timestamp();
+        let snapshot_dir = trash_root.join(format!("{}-{}", skill.id, now));
+        std::fs::create_dir_all(&trash_root).map_err(|e| format!("无法创建回收站目录：{}", e))?;
+        crate::fs::copy_dir_all(&skill.repo_path, &snapshot_dir)
+            .map_err(|e| format!("快照失败，已中止删除（数据未改动）：{}", e))?;
+
+        let sync_targets = db.raw_sync_targets_for_skill(&skill.id).map_err(|e| e.to_string())?;
+        let bindings = db.raw_bindings_for_skill(&skill.id).map_err(|e| e.to_string())?;
+        let skill_row = serde_json::json!({
+            "id": skill.id,
+            "name": skill.name,
+            "repo_path": skill.repo_path.to_string_lossy(),
+            "created_at": skill.created_at,
+            "updated_at": skill.updated_at,
+            "status": skill.status.to_string(),
+        });
+        let metadata = serde_json::json!({
+            "skill": skill_row,
+            "sync_targets": sync_targets,
+            "bindings": bindings,
+        });
+
+        let expires_at = now + (crate::discovery::config::DISMISS_COOLING_DAYS as u64) * 86400;
+        let trash_id = db
+            .insert_trash_item(
+                "skill",
+                &skill.id,
+                &skill.name,
+                &snapshot_dir.to_string_lossy(),
+                &metadata,
+                now,
+                expires_at,
+            )
+            .map_err(|e| e.to_string())?;
+
+        for target in targets.iter().filter(|t| t.skill_id == skill_id) {
+            if let Some(agent) = agents.iter().find(|a| a.id == target.agent_id) {
+                let agent_path = agent.skill_directory.join(&skill.name);
+                if agent_path.exists() || agent_path.is_symlink() {
+                    let _ = crate::fs::remove_path(&agent_path);
+                }
+                let _ = crate::fs::copy_dir_all(&skill.repo_path, &agent_path);
+            }
+        }
+
+        db.delete_skill(&skill_id).map_err(|e| e.to_string())?;
+        let _ = crate::fs::remove_path(&skill.repo_path);
+
+        Ok(trash_id)
+    }
 
     fn env_with_skill(name: &str) -> (tempfile::TempDir, Db, Settings, Skill) {
         let (tmp, db, settings) = setup_test_env();

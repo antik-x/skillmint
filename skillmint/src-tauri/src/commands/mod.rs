@@ -9,16 +9,16 @@ use tauri_plugin_opener::OpenerExt;
 
 use crate::db::new_id;
 use crate::fs::{
-    copy_dir_all, get_effective_skill_dir, merge_into_center, move_into_center, remove_path,
+    copy_dir_all, get_effective_skill_dir, merge_into_center, remove_path,
     unzip_to, zip_dir,
 };
 use crate::models::{
     Agent, AgentSkillItem, ApplyBundleResult, AppSettings, BundleExport, BundleExportSkill,
     ConflictContent, ConflictPayload, ConflictResolution, DiffStrategy, Discovery,
     DiscoveryDecisionResult, DiscoveryRunResult, GitCommit, GrowthMetrics,
-    InstallRemoteResult, ProjectDetail, RepoIntegrity, ResolvedSkill, ResolveResult, RestoreResult,
-    RestoreSummary, RollbackResult, SafetyScanResult, ScheduledTask, SearchResult, Skill, SkillBundle,
-    SkillBundleItem, SkillContent, SkillProjectBinding, SkillRemoteMeta, SkillStatus, SkillVersion,
+    ProjectDetail, RepoIntegrity, ResolvedSkill, ResolveResult, RestoreResult,
+    RestoreSummary, SafetyScanResult, ScheduledTask, SearchResult, Skill, SkillBundle,
+    SkillBundleItem, SkillProjectBinding, SkillRemoteMeta, SkillStatus,
     SnapshotInfo, Source, SourceType, SyncAllResult, SyncMode, SyncStatus, SyncTarget, TaskRun, TrashItem,
     TriggerSource, WeeklyReport,
 };
@@ -283,116 +283,7 @@ fn invalidate_directory_skill_cache(
     Ok(())
 }
 
-#[tauri::command]
-pub fn create_skill(
-    name: String,
-    agent_ids: Vec<String>,
-    state: State<'_, AppState>,
-) -> Result<Skill, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    let settings = state.settings.lock().map_err(|e| e.to_string())?;
-
-    let skill_path = settings.center_repo.join(&name);
-    std::fs::create_dir_all(&skill_path).map_err(|e| e.to_string())?;
-
-    let skill_md = skill_path.join("SKILL.md");
-    if !skill_md.exists() {
-        let template = format!("# {}\n\n## Description\n\nDescribe what this Skill does.\n\n## Usage\n\nExplain how Agent should use it.\n", name);
-        std::fs::write(&skill_md, template).map_err(|e| e.to_string())?;
-    }
-
-    let now = current_timestamp();
-    let skill = Skill {
-        id: new_id(),
-        name,
-        repo_path: skill_path,
-        created_at: now,
-        updated_at: now,
-        status: crate::models::SkillStatus::Draft,
-    };
-
-    db.insert_skill(&skill).map_err(|e| e.to_string())?;
-
-    let agents = db.get_agents().map_err(|e| e.to_string())?;
-    for agent_id in agent_ids {
-        if let Some(agent) = agents.iter().find(|a| a.id == agent_id) {
-            let target = SyncTarget {
-                id: new_id(),
-                skill_id: skill.id.clone(),
-                skill_name: Some(skill.name.clone()),
-                agent_id: agent.id.clone(),
-                agent_name: Some(agent.name.clone()),
-                mode: settings.default_sync_mode,
-                last_sync_at: None,
-                status: SyncStatus::CenterChanged,
-            };
-            db.insert_sync_target(&target).map_err(|e| e.to_string())?;
-            let _ = apply_sync_target_and_record(&db, &target, &skill, agent).map_err(|e| e.to_string())?;
-        }
-    }
-
-    // PRD-03: auto-trigger knowledge-graph extraction on skill creation.
-    trigger_kg_analysis(&db, &settings.device_id, &skill);
-    let _ = invalidate_directory_skill_cache(&db, None);
-    Ok(skill)
-}
-
-/// P1-3: update the lifecycle status of a skill.
-#[tauri::command]
-pub fn update_skill_status(
-    id: String,
-    status: SkillStatus,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.update_skill_status(&id, status).map_err(|e| e.to_string())
-}
-
 // PRD-09: built-in Markdown editor ---------------------------------------------------------------
-
-/// Read SKILL.md and split it into frontmatter (YAML) and body.
-/// `version` is optional: `None` reads `latest` (or the flat root for legacy
-/// skills); `Some("v2")` reads that immutable snapshot.
-#[tauri::command]
-pub fn read_skill_content(
-    skill_id: String,
-    version: Option<String>,
-    state: State<'_, AppState>,
-) -> Result<SkillContent, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    let skill = db
-        .get_skill_by_id(&skill_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Skill not found".to_string())?;
-
-    let skill_root = PathBuf::from(&skill.repo_path);
-    let dir = crate::fs::get_effective_skill_dir(&skill_root, version.as_deref());
-    let md_path = dir.join("SKILL.md");
-    let raw = std::fs::read_to_string(&md_path).unwrap_or_default();
-
-    let (frontmatter, body) = parse_skill_md(&raw);
-    Ok(SkillContent { frontmatter, body })
-}
-
-/// SPEC-F2 T10: check whether the SKILL.md on disk has been modified outside the app.
-#[tauri::command]
-pub fn check_skill_external_change(
-    skill_id: String,
-    state: State<'_, AppState>,
-) -> Result<bool, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    let skill = db
-        .get_skill_by_id(&skill_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Skill not found".to_string())?;
-
-    let md_path = PathBuf::from(&skill.repo_path).join("SKILL.md");
-    let disk_mtime = std::fs::metadata(&md_path)
-        .and_then(|m| m.modified())
-        .ok();
-    let db_mtime = std::time::UNIX_EPOCH + std::time::Duration::from_secs(skill.updated_at);
-    Ok(disk_mtime.map_or(false, |disk| disk > db_mtime + std::time::Duration::from_secs(2)))
-}
 
 /// SPEC-F2 T11: open the parent directory of a path in the default terminal.
 #[tauri::command]
@@ -1335,127 +1226,6 @@ pub fn scan_projects(state: State<'_, AppState>) -> Result<usize, String> {
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub fn get_skill_bindings(state: State<'_, AppState>) -> Result<Vec<crate::models::SkillProjectBinding>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    let device_id = {
-        let settings = state.settings.lock().map_err(|e| e.to_string())?;
-        settings.device_id.clone()
-    };
-    db.get_skill_project_bindings(&device_id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn add_skill_binding(
-    skill_id: String,
-    project_id: Option<String>,
-    agent_id: Option<String>,
-    mode: String,
-    state: State<'_, AppState>,
-) -> Result<crate::models::SkillProjectBinding, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    let device_id = {
-        let settings = state.settings.lock().map_err(|e| e.to_string())?;
-        settings.device_id.clone()
-    };
-    let binding = crate::models::SkillProjectBinding {
-        id: new_id(),
-        device_id: device_id.clone(),
-        skill_id: skill_id.clone(),
-        skill_name: None,
-        project_id,
-        project_name: None,
-        agent_id,
-        mode,
-        local_path: None,
-        is_enabled: true,
-        pinned_version: None,
-    };
-    db.upsert_skill_project_binding(&binding).map_err(|e| e.to_string())?;
-    Ok(binding)
-}
-
-#[tauri::command]
-pub fn remove_skill_binding(id: String, state: State<'_, AppState>) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.delete_skill_project_binding(&id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn create_project_skill(
-    project_path: String,
-    name: String,
-    project_id: Option<String>,
-    agent_ids: Option<Vec<String>>,
-    state: State<'_, AppState>,
-) -> Result<Skill, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    let settings = state.settings.lock().map_err(|e| e.to_string())?;
-    // Write SKILL.md under <project>/<project_skill_dir_name>/<name>/
-    let skill_dir = std::path::PathBuf::from(&project_path)
-        .join(&settings.project_skill_dir_name)
-        .join(&name);
-    std::fs::create_dir_all(&skill_dir).map_err(|e| e.to_string())?;
-    let skill_md = skill_dir.join("SKILL.md");
-    if !skill_md.exists() {
-        let template = format!(
-            "# {}\n\n## Description\n\nDescribe what this Skill does.\n\n## Usage\n\nExplain how Agent should use it.\n",
-            name
-        );
-        std::fs::write(&skill_md, template).map_err(|e| e.to_string())?;
-    }
-
-    // Register the skill in the center repo (so it's tracked + syncable).
-    let now = current_timestamp();
-    let skill = Skill {
-        id: new_id(),
-        name: name.clone(),
-        repo_path: skill_dir,
-        created_at: now,
-        updated_at: now,
-        status: crate::models::SkillStatus::Draft,
-    };
-    db.insert_skill(&skill).map_err(|e| e.to_string())?;
-
-    // Create a project binding linking this skill to the project.
-    let binding = crate::models::SkillProjectBinding {
-        id: new_id(),
-        device_id: settings.device_id.clone(),
-        skill_id: skill.id.clone(),
-        skill_name: Some(skill.name.clone()),
-        project_id: project_id.clone(),
-        project_name: None,
-        agent_id: None,
-        mode: "local_copy".to_string(),
-        local_path: Some(skill.repo_path.to_string_lossy().to_string()),
-        is_enabled: true,
-        pinned_version: None,
-    };
-    db.upsert_skill_project_binding(&binding).map_err(|e| e.to_string())?;
-
-    // Sync to specified agents (if any).
-    if let Some(aids) = agent_ids {
-        let agents = db.get_agents().map_err(|e| e.to_string())?;
-        for aid in aids {
-            if let Some(agent) = agents.iter().find(|a| a.id == aid) {
-                let target = SyncTarget {
-                    id: new_id(),
-                    skill_id: skill.id.clone(),
-                    skill_name: Some(skill.name.clone()),
-                    agent_id: agent.id.clone(),
-                    agent_name: Some(agent.name.clone()),
-                    mode: settings.default_sync_mode,
-                    last_sync_at: None,
-                    status: SyncStatus::CenterChanged,
-                };
-                db.insert_sync_target(&target).map_err(|e| e.to_string())?;
-                let _ = apply_sync_target_and_record(&db, &target, &skill, agent);
-            }
-        }
-    }
-    Ok(skill)
-}
-
 // =============================================================================
 // PRD-01 patch: project detail page + multi-version skill management (FR-A..F)
 // =============================================================================
@@ -1560,45 +1330,6 @@ pub fn get_project_detail(
     build_project_detail(&db, &device_id, &project_id).map_err(|e| e.to_string())
 }
 
-/// FR-C: resolve the physical nature of one skill in an agent directory
-/// (symlink / copy / local / broken) + content match + registration/pin info.
-#[tauri::command]
-pub fn resolve_skill_link_command(
-    project_id: String,
-    agent_id: String,
-    skill_name: String,
-    state: State<'_, AppState>,
-) -> Result<ResolvedSkill, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    let settings = state.settings.lock().map_err(|e| e.to_string())?;
-    build_resolved_skill(&db, &settings.device_id, &settings, &project_id, &agent_id, &skill_name)
-        .map_err(|e| e.to_string())
-}
-
-/// Core logic of `list_skill_versions_command`.
-pub fn list_versions_core(
-    db: &crate::db::Db,
-    skill_id: &str,
-) -> Result<Vec<SkillVersion>, anyhow::Error> {
-    let skill = db
-        .get_skill_by_id(skill_id)?
-        .ok_or_else(|| anyhow::anyhow!("Skill not found"))?;
-    let root = PathBuf::from(&skill.repo_path);
-    let raw = crate::fs::list_skill_versions(&root)?;
-    let mut out = Vec::with_capacity(raw.len());
-    for (version, created_at, note) in raw {
-        // PRD §4.5d: populate pinned_by with project names pinning to this version.
-        let pinned_by = db.get_pinned_projects_for_version(skill_id, &version)?;
-        out.push(SkillVersion {
-            version,
-            created_at,
-            note,
-            pinned_by,
-        });
-    }
-    Ok(out)
-}
-
 /// Core logic of `resolve_skill_diff_command`.
 ///
 /// `strategy` is the raw string from the frontend (`keep_center` / `keep_project` /
@@ -1666,46 +1397,6 @@ pub fn resolve_diff_core(
     })
 }
 
-#[tauri::command]
-pub fn install_skill_to_project(
-    skill_id: String,
-    project_id: String,
-    agent_ids: Vec<String>,
-    mode: String,
-    state: State<'_, AppState>,
-) -> Result<Vec<SkillProjectBinding>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    let device_id = {
-        let s = state.settings.lock().map_err(|e| e.to_string())?;
-        s.device_id.clone()
-    };
-    install_skill_core(&db, &device_id, &skill_id, &project_id, &agent_ids, &mode)
-        .map_err(|e| e.to_string())
-}
-
-/// FR-F: list all versions of a skill (latest + v<x>).
-#[tauri::command]
-pub fn list_skill_versions_command(
-    skill_id: String,
-    state: State<'_, AppState>,
-) -> Result<Vec<SkillVersion>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    list_versions_core(&db, &skill_id).map_err(|e| e.to_string())
-}
-
-/// FR-F: resolve a content diff with one of three strategies
-/// (keep_center / keep_project / versionize). Updates the binding's pin.
-#[tauri::command]
-pub fn resolve_skill_diff_command(
-    binding_id: String,
-    strategy: String,
-    note: Option<String>,
-    state: State<'_, AppState>,
-) -> Result<ResolveResult, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    resolve_diff_core(&db, &binding_id, &strategy, note.as_deref()).map_err(|e| e.to_string())
-}
-
 /// Core logic of `pin_binding_version` (testable without Tauri runtime).
 pub fn pin_binding_version_core(
     db: &crate::db::Db,
@@ -1760,19 +1451,6 @@ pub fn pin_binding_version_core(
         .ok_or_else(|| anyhow::anyhow!("Binding disappeared after pin"))
 }
 
-/// FR-F: manually pin (or unpin) a binding to a specific version.
-/// `version = None` means follow latest. Re-creates the physical symlink/copy
-/// so the project copy immediately reflects the chosen version.
-#[tauri::command]
-pub fn pin_binding_version(
-    binding_id: String,
-    version: Option<String>,
-    state: State<'_, AppState>,
-) -> Result<SkillProjectBinding, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    pin_binding_version_core(&db, &binding_id, version.as_deref()).map_err(|e| e.to_string())
-}
-
 /// Core logic of `delete_skill_version`.
 pub fn delete_skill_version_core(
     db: &crate::db::Db,
@@ -1801,18 +1479,6 @@ pub fn delete_skill_version_core(
     Ok(())
 }
 
-/// FR-F: delete an immutable snapshot `v<x>`. Refuses if any binding still pins
-/// to it, returning the list of pinning project names.
-#[tauri::command]
-pub fn delete_skill_version(
-    skill_id: String,
-    version: String,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    delete_skill_version_core(&db, &skill_id, &version).map_err(|e| e.to_string())
-}
-
 /// Core logic of `set_version_note`.
 pub fn set_version_note_core(
     db: &crate::db::Db,
@@ -1828,19 +1494,6 @@ pub fn set_version_note_core(
         anyhow::bail!("版本目录不存在：{}", version_dir.display());
     }
     crate::fs::write_version_note(&version_dir, note)
-}
-
-/// FR-F: write a human note to a version directory's `.version-note` sidecar.
-/// Pass an empty/null note to clear it.
-#[tauri::command]
-pub fn set_version_note(
-    skill_id: String,
-    version: String,
-    note: Option<String>,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    set_version_note_core(&db, &skill_id, &version, note.as_deref()).map_err(|e| e.to_string())
 }
 
 /// Core logic of `get_version_note`.
@@ -1861,102 +1514,6 @@ pub fn get_version_note_core(
     let content = std::fs::read_to_string(&note_path)?;
     let trimmed = content.trim().to_string();
     Ok(if trimmed.is_empty() { None } else { Some(trimmed) })
-}
-
-/// FR-F: read the `.version-note` sidecar of a version directory.
-#[tauri::command]
-pub fn get_version_note(
-    skill_id: String,
-    version: String,
-    state: State<'_, AppState>,
-) -> Result<Option<String>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    get_version_note_core(&db, &skill_id, &version).map_err(|e| e.to_string())
-}
-
-/// Core logic of `save_version` (superpowers spec G3-①).
-/// Snapshots the current `latest/` (or flat root) into a new immutable `v<x>/`
-/// without touching any project binding. Returns the new version label.
-pub fn save_version_core(
-    db: &crate::db::Db,
-    skill_id: &str,
-    note: Option<&str>,
-) -> anyhow::Result<String> {
-    let skill = db
-        .get_skill_by_id(skill_id)?
-        .ok_or_else(|| anyhow::anyhow!("Skill not found"))?;
-    let skill_root = PathBuf::from(&skill.repo_path);
-    let label = crate::fs::snapshot_version_with_note(&skill_root, note)?;
-    Ok(label)
-}
-
-/// G3-①: manually snapshot the current `latest` as a new immutable version.
-#[tauri::command]
-pub fn save_version(
-    skill_id: String,
-    note: Option<String>,
-    state: State<'_, AppState>,
-) -> Result<String, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    save_version_core(&db, &skill_id, note.as_deref()).map_err(|e| e.to_string())
-}
-
-/// Core logic of `rollback_to_version` (superpowers spec G2).
-/// Before overwriting `latest` with the target version, the current `latest`
-/// is first snapshotted to a new `v<x+1>/` so the operation remains reversible.
-pub fn rollback_to_version_core(
-    db: &crate::db::Db,
-    skill_id: &str,
-    target_version: &str,
-) -> anyhow::Result<RollbackResult> {
-    // Only accept immutable version labels like "v1", "v2" to prevent path traversal.
-    if !target_version.starts_with('v')
-        || target_version.len() < 2
-        || target_version[1..].parse::<u32>().is_err()
-    {
-        anyhow::bail!("invalid version label: {}", target_version);
-    }
-    let skill = db
-        .get_skill_by_id(skill_id)?
-        .ok_or_else(|| anyhow::anyhow!("Skill not found"))?;
-    let skill_root = PathBuf::from(&skill.repo_path);
-
-    let target_dir = skill_root.join(target_version);
-    if !target_dir.exists() {
-        anyhow::bail!("version does not exist: {}", target_version);
-    }
-
-    // 1. Snapshot current latest into a new version (preserves pre-rollback state).
-    let saved_as = crate::fs::snapshot_version(&skill_root)?;
-
-    // 2. Overwrite latest with the target version's content.
-    let latest_dir = skill_root.join(crate::fs::LATEST_VERSION);
-    if latest_dir.exists() {
-        for entry in std::fs::read_dir(&latest_dir)? {
-            let entry = entry?;
-            remove_path(&entry.path())?;
-        }
-    } else {
-        std::fs::create_dir_all(&latest_dir)?;
-    }
-    crate::fs::copy_dir_all(&target_dir, &latest_dir)?;
-
-    Ok(RollbackResult {
-        saved_as,
-        rolled_to: target_version.to_string(),
-    })
-}
-
-/// G2: rollback `latest` to a historical version. The previous `latest` is kept
-/// as a new immutable version so the rollback can be undone.
-#[tauri::command]
-pub fn rollback_to_version(
-    skill_id: String,
-    target_version: String,
-    state: State<'_, AppState>,
-) -> Result<RollbackResult, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    rollback_to_version_core(&db, &skill_id, &target_version).map_err(|e| e.to_string())
 }
 
 // =============================================================================
@@ -1984,20 +1541,6 @@ pub fn open_project_in_terminal(path: String) -> Result<(), String> {
         .spawn()
         .map_err(|e| e.to_string())?;
     Ok(())
-}
-
-#[tauri::command]
-pub fn promote_to_global(
-    skill_id: String,
-    state: State<'_, AppState>,
-) -> Result<String, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    let center_repo = {
-        let settings = state.settings.lock().map_err(|e| e.to_string())?;
-        settings.center_repo.clone()
-    };
-    db.promote_skill_to_global(&skill_id, &center_repo)
-        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2141,6 +1684,64 @@ pub(crate) fn generate_skill_description(prompt_text: &str) -> String {
 }
 
 #[tauri::command]
+/// Internal creation helper for the discovery-adoption pipeline (PRD-02/PRD-12:
+/// Inbox + Usage still author through the legacy `skills` store). NOT a Tauri
+/// command since P3-6b — the GUI authoring path is `hub_create_skill` (P3-5).
+/// Migration of this pipeline into the private hubs is tracked as P3-6c.
+pub fn create_skill_internal(
+    name: String,
+    agent_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Skill, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let settings = state.settings.lock().map_err(|e| e.to_string())?;
+
+    let skill_path = settings.center_repo.join(&name);
+    std::fs::create_dir_all(&skill_path).map_err(|e| e.to_string())?;
+
+    let skill_md = skill_path.join("SKILL.md");
+    if !skill_md.exists() {
+        let template = format!("# {}\n\n## Description\n\nDescribe what this Skill does.\n\n## Usage\n\nExplain how Agent should use it.\n", name);
+        std::fs::write(&skill_md, template).map_err(|e| e.to_string())?;
+    }
+
+    let now = current_timestamp();
+    let skill = Skill {
+        id: new_id(),
+        name,
+        repo_path: skill_path,
+        created_at: now,
+        updated_at: now,
+        status: crate::models::SkillStatus::Draft,
+    };
+
+    db.insert_skill(&skill).map_err(|e| e.to_string())?;
+
+    let agents = db.get_agents().map_err(|e| e.to_string())?;
+    for agent_id in agent_ids {
+        if let Some(agent) = agents.iter().find(|a| a.id == agent_id) {
+            let target = SyncTarget {
+                id: new_id(),
+                skill_id: skill.id.clone(),
+                skill_name: Some(skill.name.clone()),
+                agent_id: agent.id.clone(),
+                agent_name: Some(agent.name.clone()),
+                mode: settings.default_sync_mode,
+                last_sync_at: None,
+                status: SyncStatus::CenterChanged,
+            };
+            db.insert_sync_target(&target).map_err(|e| e.to_string())?;
+            let _ = apply_sync_target_and_record(&db, &target, &skill, agent).map_err(|e| e.to_string())?;
+        }
+    }
+
+    // PRD-03: auto-trigger knowledge-graph extraction on skill creation.
+    trigger_kg_analysis(&db, &settings.device_id, &skill);
+    let _ = invalidate_directory_skill_cache(&db, None);
+    Ok(skill)
+}
+
+#[tauri::command]
 pub fn generate_skill_from_prompt(
     prompt_text: String,
     agent_ids: Option<Vec<String>>,
@@ -2170,7 +1771,7 @@ pub fn generate_skill_from_prompt(
     let prompt_trimmed = prompt_text.trim();
     let desc = generate_skill_description(prompt_trimmed);
     let agents = agent_ids.unwrap_or_default();
-    let skill = create_skill(name, agents, state.clone())?;
+    let skill = create_skill_internal(name, agents, state.clone())?;
     // Overwrite the templated SKILL.md with the prompt-derived description.
     let skill_md = skill.repo_path.join("SKILL.md");
     let body = format!(
@@ -3033,144 +2634,6 @@ pub fn scan_skill_safety(
     let skill_dir = cache_dir.join(&skill_path);
     let body = remote::read_skill_body(&skill_dir);
     Ok(remote::scan_safety(&body))
-}
-
-/// PRD-07 §3.2: install a skill from a source into the center repo, then sync
-/// to the chosen agents. Reuses `add_skill` semantics (copies into center) and
-/// `install_skill_core` for per-agent symlinks/copies.
-///
-/// Safety scan is performed server-side too; if findings exist the caller is
-/// expected to have confirmed, but we return the scan result so the frontend
-/// can display it post-install as a persistent risk badge source.
-///
-/// Returns the list of agents where a same-named skill already existed and was
-/// therefore skipped (not overwritten), so a partial sync is never silent.
-#[tauri::command]
-pub fn install_remote_skill(
-    source_id: String,
-    skill_path: String,
-    agent_ids: Vec<String>,
-    mode: Option<String>, // "symlink" | "copy"; None => use default
-    confirmed_risks: Option<Vec<String>>,
-    state: State<'_, AppState>,
-) -> Result<InstallRemoteResult, String> {
-    // --- Phase 1: resolve the source + settings without holding DB lock during IO ---
-    let (cache_dir, center_repo, default_mode, device_id) = {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        let settings = state.settings.lock().map_err(|e| e.to_string())?;
-        let source = db
-            .get_source_by_id(&source_id)
-            .map_err(|e| e.to_string())?
-            .ok_or("源不存在")?;
-        (
-            PathBuf::from(&source.cache_path),
-            settings.center_repo.clone(),
-            settings.default_sync_mode.to_string(),
-            settings.device_id.clone(),
-        )
-    };
-
-    let skill_src = cache_dir.join(&skill_path);
-    if !skill_src.is_dir() {
-        return Err(format!("Skill 目录不存在于源缓存: {skill_path}"));
-    }
-    let skill_name = skill_src
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or("无法解析 Skill 名")?
-        .to_string();
-
-    // SPEC-F3: server-side safety scan + confirmation check.
-    let body = crate::remote::read_skill_body(&skill_src);
-    let scan = crate::remote::scan_safety(&body);
-    let confirmed = confirmed_risks.unwrap_or_default();
-    if !scan.findings.is_empty() {
-        let confirmed_set: std::collections::HashSet<_> = confirmed.iter().cloned().collect();
-        let uncovered: Vec<_> = scan
-            .findings
-            .iter()
-            .filter(|f| !confirmed_set.contains(&f.rule))
-            .collect();
-        if !uncovered.is_empty() {
-            return Err(format!(
-                "该 Skill 存在未确认的安全风险（{} 项），请先确认后再安装",
-                uncovered.len()
-            ));
-        }
-    }
-
-    // Copy skill into center repo (outside locks — pure FS IO).
-    let dest = center_repo.join(&skill_name);
-    if dest.exists() {
-        return Err(format!(
-            "中心仓库已存在「{skill_name}」。请先在「Skill 管理」中处理差异或删除。"
-        ));
-    }
-    copy_dir_all(&skill_src, &dest).map_err(|e| e.to_string())?;
-
-    let now = current_timestamp();
-    let skill = Skill {
-        id: new_id(),
-        name: skill_name.clone(),
-        repo_path: dest,
-        created_at: now,
-        updated_at: now,
-        status: crate::models::SkillStatus::Draft,
-    };
-
-    // --- Phase 2: persist skill row + sync to agents under the DB lock ---
-    let mode_str = mode.unwrap_or(default_mode);
-    let stored_mode = if mode_str == "copy" { "local_copy" } else { "symlink" };
-    let physical_copy = stored_mode == "local_copy";
-    let source_dir = get_effective_skill_dir(&skill.repo_path, None);
-
-    let synced_agents;
-    let skipped_agents;
-    {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        db.insert_skill(&skill).map_err(|e| e.to_string())?;
-        db.log_install_audit(
-            &crate::db::new_id(),
-            &skill_name,
-            &source_id,
-            &scan.findings,
-            &confirmed,
-            true,
-            current_timestamp(),
-        )
-        .map_err(|e| e.to_string())?;
-
-        let agents = db.get_agents().map_err(|e| e.to_string())?;
-        let mut synced = Vec::new();
-        let mut skipped = Vec::new();
-        for aid in &agent_ids {
-            let Some(agent) = agents.iter().find(|a| &a.id == aid) else {
-                continue;
-            };
-            let dst = agent.skill_directory.join(&skill.name);
-            if dst.exists() || dst.is_symlink() {
-                skipped.push(agent.name.clone());
-                continue;
-            }
-            if physical_copy {
-                copy_dir_all(&source_dir, &dst).map_err(|e| e.to_string())?;
-            } else {
-                crate::fs::create_symlink_or_copy(&source_dir, &dst).map_err(|e| e.to_string())?;
-            }
-            synced.push(agent.name.clone());
-        }
-        synced_agents = synced;
-        skipped_agents = skipped;
-
-        // PRD-03: best-effort KG analysis on the newly-installed skill.
-        trigger_kg_analysis(&db, &device_id, &skill);
-    }
-
-    Ok(InstallRemoteResult {
-        skill,
-        synced_agents,
-        skipped_agents,
-    })
 }
 
 /// Read a skill's SKILL.md (case-insensitive) if it exists.

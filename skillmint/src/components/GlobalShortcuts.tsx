@@ -1,10 +1,9 @@
 import { useCallback, useRef } from "react";
-import { invoke } from "../lib/invoke";
+import { rebuildSkillIndex } from "../lib/npxskills";
 import { useAppStore } from "../stores/appStore";
 import { useCollectionStore } from "../stores/collectionStore";
 import { showError, showInfo, showSuccess } from "../stores/toastStore";
 import { useHotkey } from "../hooks/useHotkeys";
-import type { SyncAllResult } from "../types";
 
 export interface GlobalShortcutsProps {
   onTogglePalette: () => void;
@@ -27,18 +26,11 @@ export function GlobalShortcuts({ onTogglePalette, onOpenHelp }: GlobalShortcuts
     syncDebounceRef.current = setTimeout(() => {
       syncDebounceRef.current = null;
     }, 1000);
-    showInfo("同步已启动…", 2000);
+    showInfo("正在刷新技能索引…", 2000);
     try {
-      const result = await invoke<SyncAllResult>("sync_all_command");
+      const summary = await rebuildSkillIndex(null);
       await loadData();
-      if (result.failure_count > 0) {
-        showError(
-          `同步完成：${result.success_count} 成功，${result.failure_count} 失败`,
-          5000
-        );
-      } else {
-        showSuccess(`同步完成：${result.success_count} 个目标成功`);
-      }
+      showSuccess(`索引已刷新：${summary.total} 项`);
     } catch (err) {
       showError(err, { context: "同步" });
     }

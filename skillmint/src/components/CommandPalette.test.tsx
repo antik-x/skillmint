@@ -59,13 +59,14 @@ describe("CommandPalette", () => {
     render(<CommandPalette open onClose={onClose} />);
 
     const input = screen.getByPlaceholderText("搜索页面、Skill 或动作…");
-    await userEvent.type(input, "sync");
+    // P3: the sync-all action became "刷新技能索引" (index rebuild).
+    await userEvent.type(input, "索引");
 
     await userEvent.keyboard("{ArrowDown}");
     await userEvent.keyboard("{Enter}");
 
     await waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith("sync_all_command");
+      expect(invoke).toHaveBeenCalledWith("rebuild_skill_index", { projectRoot: null });
     });
   });
 

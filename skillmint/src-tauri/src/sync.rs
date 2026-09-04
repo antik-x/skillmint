@@ -244,68 +244,6 @@ pub fn sync_all(db: &Db) -> Result<SyncReport> {
     Ok(SyncReport { updated, broken })
 }
 
-/// SPEC-F3: run a one-off consistency check at startup. Compares disk state
-/// against every sync target and updates the DB when drift is detected.
-/// Runs in a background thread and never blocks startup.
-pub fn run_startup_consistency_check(db: Db) {
-    std::thread::spawn(move || {
-        let skills = match db.get_skills() {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("[startup-check] failed to load skills: {e}");
-                return;
-            }
-        };
-        let agents: std::collections::HashMap<String, Agent> = match db.get_agents() {
-            Ok(a) => a.into_iter().map(|a| (a.id.clone(), a)).collect(),
-            Err(e) => {
-                eprintln!("[startup-check] failed to load agents: {e}");
-                return;
-            }
-        };
-        let targets = match db.get_sync_targets() {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("[startup-check] failed to load sync targets: {e}");
-                return;
-            }
-        };
-        for target in targets {
-            let skill = match skills.iter().find(|s| s.id == target.skill_id) {
-                Some(s) => s,
-                None => continue,
-            };
-            let agent = match agents.get(&target.agent_id) {
-                Some(a) => a,
-                None => continue,
-            };
-            let status = match evaluate_sync_target(&target, skill, agent) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!(
-                        "[startup-check] failed to evaluate {} -> {}: {e}",
-                        target.skill_name.as_deref().unwrap_or("?"),
-                        target.agent_name.as_deref().unwrap_or("?")
-                    );
-                    continue;
-                }
-            };
-            if status != target.status {
-                if let Err(e) = db.update_sync_target_status(&target.id, status) {
-                    eprintln!("[startup-check] failed to update status for {}: {e}", target.id);
-                } else {
-                    eprintln!(
-                        "[startup-check] drift corrected: {} -> {} is now {:?}",
-                        target.skill_name.as_deref().unwrap_or("?"),
-                        target.agent_name.as_deref().unwrap_or("?"),
-                        status
-                    );
-                }
-            }
-        }
-    });
-}
-
 // =============================================================================
 // PRD-01 patch FR-C/FR-F: skill resolution + multi-version diff handling
 // =============================================================================

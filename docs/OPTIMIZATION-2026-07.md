@@ -192,10 +192,15 @@
 - 新建 skill（模板 + git 自动提交）、收集到 hub（**只复制**，不动源目录/npx lock/agent 链接，跳过 `.git/node_modules/…`）、远端配置与推送状态（无 upstream 时 ahead=待推提交数）；
 - 卸载前快照到 `~/.skillmint/trash/` 并登记 SPEC-C3 trash 表（30 天过期，启动清理沿用）。
 
-### P3-6 退役清理 ✅（UI/入口层；引擎代码删除为 P3-6b 跟进项）
+### P3-6 退役清理 ✅（UI/入口层）
 - 设置删减：`center_repo` / `default_sync_mode` / `skill_scope_mode` / `project_skill_dir_name` 从 Settings 暴露面（后端 AppSettings 模型 + 前端类型/store/偏好面板）移除；
 - 入口全断：App.tsx 自动 tick 与 deep-link 改为索引刷新、center repo 恢复横幅移除；lib.rs 不再引导 center repo、启动一致性检查替换为指纹化索引重建；Skills.tsx 库页与相关测试删除；Onboarding 不再询问仓库路径。
-- **P3-6b（未完成，机械性删除）**：`sync.rs`/`fs.rs` center 侧原语/版本快照/`install_skill_to_project`/`resolve_diff` 等遗留命令与 `src/tests.rs` 中对应用例仍在编译，但已无任何 UI 入口可达；删除时需连带 Projects 页的遗留安装/提升按钮与 `ScheduledTaskForm` 的 `backup_center_repo` 任务类型。
+### P3-6b 机械删除 ✅
+- 删除孤儿命令（无前端调用者，25 个）：`add_skill`、`remove_skill`、`create_skill`（命令面；采纳管线改用内部 `create_skill_internal`）、`update_skill_status`、`rename_skill`、`create_project_skill`、`promote_to_global`、`install_skill_to_project`、`resolve_skill_link_command`、`resolve_skill_diff_command`、`list_skill_versions_command`、`pin/delete/set/get_version_note`、`save_version`、`rollback_to_version`、`add/remove/get_skill_bindings`、`install_remote_skill`、`import_skill`、`read_skill_content`、`check_skill_external_change`、`check_repo_integrity`；
+- 删除孤儿组件（前端）：SkillEditor / VersionPanel / ImportSkillModal；Projects 页重写为纯使用洞察页（安装/版本/一致性 UI 移除）；`backup_center_repo` 从任务表单选项移除（后端任务类型保留，DB 已有种子行）；
+- 删除死代码：`resolve_diff_core` 相关版本 core、`move_into_center`、`run_startup_consistency_check`、`SkillVersion`/`RollbackResult`/`SkillContent`/`RepoIntegrity`（后者保留为 repair 测试 oracle，标 allow）、`InstallRemoteResult` 模型；`init_app` 的 center repo 引导与迁移剥离；
+- trash 恢复/清除机制保留（TrashPanel 仍在用），其测试改用本地夹具播种回收站；
+- **P3-6c（剩余，需产品决策）**：发现采纳管线（Inbox/Usage 的 PRD-02/PRD-12 流程）仍写 legacy `skills` 表，Today/Dashboard/Inbox 仍调用 `sync_all`/`sync_single`——这些是活功能，迁移到 hub + 索引语义属于管线改造而非机械删除。
 
 **验收**：`cargo test --lib` 247 通过；`npm run test:ci`（Node 22）166 通过；真实机器上 `npx skills add vercel-labs/agent-skills -s pdf …` 后 app 聚焦即显示该 skill（lock 驱动），卸载走确认 + trash 快照。
 
