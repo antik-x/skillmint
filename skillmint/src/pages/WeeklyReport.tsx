@@ -129,7 +129,6 @@ export default function WeeklyReport() {
     <div className="h-full overflow-auto p-8">
       <div className="mb-6 flex items-center justify-between">
         <div className="flex items-baseline gap-3">
-          <h1 className="text-xl font-bold text-primary">周报</h1>
           <span className="text-xs text-tertiary font-mono" data-testid="weekly-date-range">
             {formatRange(week)}
           </span>

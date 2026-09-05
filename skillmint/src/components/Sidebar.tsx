@@ -1,15 +1,12 @@
 import { memo, useEffect, useState } from "react";
 import {
-  CalendarDays,
-  FileText,
+  BarChart3,
   FolderGit,
-  Globe,
+  History,
   Inbox,
   Library,
   Bot,
-  Puzzle,
   Settings,
-  Share2,
   Sparkles,
   TrendingUp,
   type LucideIcon,
@@ -31,35 +28,29 @@ interface Group {
   items: MenuItem[];
 }
 
+// P4 IA 收敛：分组对齐 docs/product-epics.md 的三个 epic
+// （技能资产 = E1，投入产出 = E2，收件箱 = E3 入口，系统 = 横切 enabler）。
 const groups: Group[] = [
   {
     items: [
       { id: "today", label: "今天", icon: Sparkles },
       { id: "inbox", label: "收件箱", icon: Inbox },
-      { id: "growthAssets", label: "成长资产", icon: TrendingUp },
     ],
   },
   {
-    eyebrow: "资产库",
+    eyebrow: "技能资产",
     items: [
       { id: "skillLibrary", label: "Skill 库", icon: Library },
-      { id: "knowledgeGraph", label: "知识图谱", icon: Share2 },
-      { id: "discover", label: "发现", icon: Globe },
-    ],
-  },
-  {
-    eyebrow: "工作区",
-    items: [
-      { id: "projects", label: "项目", icon: FolderGit },
+      { id: "growthAssets", label: "成长资产", icon: TrendingUp },
       { id: "agents", label: "Agent", icon: Bot },
     ],
   },
   {
-    eyebrow: "档案",
+    eyebrow: "投入产出",
     items: [
-      { id: "usage", label: "洞察档案", icon: Puzzle },
-      { id: "weeklyReport", label: "周报", icon: CalendarDays },
-      { id: "dailySummaries", label: "每日摘要", icon: FileText },
+      { id: "usage", label: "洞察", icon: BarChart3 },
+      { id: "projects", label: "项目", icon: FolderGit },
+      { id: "workMemory", label: "工作记忆", icon: History },
     ],
   },
   {
@@ -70,7 +61,6 @@ const groups: Group[] = [
 
 function SidebarComponent() {
   const activeTab = useAppStore((state) => state.activeTab);
-  const skillLibrarySubTab = useAppStore((state) => state.skillLibrarySubTab);
   const setActiveTab = useAppStore((state) => state.setActiveTab);
   const sidebarVisible = useAppStore((state) => state.sidebarVisible);
   const inboxRefreshKey = useAppStore((state) => state.inboxRefreshKey);
@@ -114,10 +104,13 @@ function SidebarComponent() {
             <div className="space-y-1">
               {group.items.map((item) => {
                 const Icon = item.icon;
+                // 知识图谱 / 发现已并入 Skill 库的子 tab；旧 tab 值直达时高亮 Skill 库。
                 const isActive =
-                  activeTab === item.id ||
-                  (item.id === "knowledgeGraph" && activeTab === "skillLibrary" && skillLibrarySubTab === "graph") ||
-                  (item.id === "discover" && activeTab === "skillLibrary" && skillLibrarySubTab === "discover");
+                  item.id === "skillLibrary"
+                    ? activeTab === "skillLibrary" ||
+                      activeTab === "knowledgeGraph" ||
+                      activeTab === "discover"
+                    : activeTab === item.id;
                 const showAmberBadge = item.id === "inbox" && typeof pendingCount === "number" && pendingCount > 0;
                 return (
                   <button

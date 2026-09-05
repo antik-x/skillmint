@@ -54,12 +54,12 @@ interface CommandPaletteProps {
 const STATIC_PAGES: Omit<CommandItem, "id" | "action">[] = [
   { type: "page", title: "今天", icon: Sparkles, keywords: "today" },
   { type: "page", title: "收件箱", icon: Inbox, keywords: "inbox" },
-  { type: "page", title: "成长资产", icon: TrendingUp, keywords: "growth assets" },
   { type: "page", title: "Skill 库", subtitle: "技能、技能集、知识图谱、发现", icon: Library, keywords: "skill skills" },
-  { type: "page", title: "洞察档案", icon: BarChart3, keywords: "usage insights" },
+  { type: "page", title: "成长资产", icon: TrendingUp, keywords: "growth assets" },
+  { type: "page", title: "洞察", subtitle: "洞察档案", icon: BarChart3, keywords: "usage insights" },
   { type: "page", title: "Agent", icon: Bot, keywords: "agents" },
   { type: "page", title: "项目", icon: FolderGit, keywords: "projects" },
-  { type: "page", title: "周报", icon: CalendarDays, keywords: "weekly report" },
+  { type: "page", title: "工作记忆", subtitle: "周报 · 每日摘要", icon: CalendarDays, keywords: "work memory weekly daily report 周报 摘要" },
   { type: "page", title: "设置", icon: Settings, keywords: "settings" },
 ];
 
@@ -127,12 +127,10 @@ function useCommandItems(
           else if (title === "收件箱") navigateTo("inbox");
           else if (title === "成长资产") navigateTo("growthAssets");
           else if (title === "Skill 库") navigateTo("skillLibrary", "skills");
-          else if (title === "发现") navigateTo("skillLibrary", "discover");
-          else if (title === "知识图谱") navigateTo("skillLibrary", "graph");
+          else if (title === "洞察") navigateTo("usage");
           else if (title === "Agent") navigateTo("agents");
           else if (title === "项目") navigateTo("projects");
-          else if (title === "洞察档案") navigateTo("usage");
-          else if (title === "周报") navigateTo("weeklyReport");
+          else if (title === "工作记忆") navigateTo("workMemory");
           else if (title === "设置") navigateTo("settings", "preferences");
         },
       })),

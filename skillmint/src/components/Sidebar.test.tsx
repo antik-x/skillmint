@@ -32,12 +32,10 @@ describe("Sidebar", () => {
     expect(screen.getByText("收件箱")).toBeInTheDocument();
     expect(screen.getByText("成长资产")).toBeInTheDocument();
     expect(screen.getByText("Skill 库")).toBeInTheDocument();
-    expect(screen.getByText("知识图谱")).toBeInTheDocument();
-    expect(screen.getByText("发现")).toBeInTheDocument();
     expect(screen.getByText("项目")).toBeInTheDocument();
     expect(screen.getByText("Agent")).toBeInTheDocument();
-    expect(screen.getByText("洞察档案")).toBeInTheDocument();
-    expect(screen.getByText("周报")).toBeInTheDocument();
+    expect(screen.getByText("洞察")).toBeInTheDocument();
+    expect(screen.getByText("工作记忆")).toBeInTheDocument();
   });
 
   it("switches active tab on click", async () => {
@@ -46,10 +44,10 @@ describe("Sidebar", () => {
     expect(useAppStore.getState().activeTab).toBe("inbox");
   });
 
-  it("selects daily summaries without redirecting to today", async () => {
+  it("selects work memory without redirecting to today", async () => {
     render(<Sidebar />);
-    await userEvent.click(screen.getByText("每日摘要"));
-    expect(useAppStore.getState().activeTab).toBe("dailySummaries");
+    await userEvent.click(screen.getByText("工作记忆"));
+    expect(useAppStore.getState().activeTab).toBe("workMemory");
   });
 
   it("shows amber badge for pending discoveries", async () => {

@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import type { Skill, Agent, AppSettings } from "../types";
 
-/** 重构后的顶层入口，符合 SPEC-I4 信息架构。 */
+/** 重构后的顶层入口，符合 SPEC-I4 信息架构（E1/E2/E3 对齐 docs/product-epics.md）。 */
 export type AppTab =
   | "today"
   | "inbox"
@@ -16,9 +16,11 @@ export type AppTab =
   | "weeklyReport"
   | "settings"
   | "dashboard"
-  | "dailySummaries";
+  | "dailySummaries"
+  | "workMemory";
 
 export type SkillLibrarySubTab = "skills" | "bundles" | "graph" | "discover";
+export type WorkMemorySubTab = "weekly" | "daily";
 export type SettingsSubTab = "preferences" | "dataCollection" | "scheduledTasks" | "dataManagement" | "aiAnalysis" | "about";
 
 /** 旧版 tab key，用于状态迁移或外部持久化值的兼容映射。 */
@@ -40,6 +42,7 @@ interface AppState {
   initialized: boolean;
   activeTab: AppTab;
   skillLibrarySubTab: SkillLibrarySubTab;
+  workMemorySubTab: WorkMemorySubTab;
   settingsSubTab: SettingsSubTab;
   selectedSkillId: string | null;
   selectedSkillName: string | null;
@@ -54,6 +57,7 @@ interface AppState {
   setInitialized: (value: boolean) => void;
   setActiveTab: (tab: AppState["activeTab"]) => void;
   setSkillLibrarySubTab: (subTab: SkillLibrarySubTab) => void;
+  setWorkMemorySubTab: (subTab: WorkMemorySubTab) => void;
   setSettingsSubTab: (subTab: SettingsSubTab) => void;
   navigateToSettings: (subTab: SettingsSubTab) => void;
   setSelectedSkillId: (id: string | null) => void;
@@ -78,11 +82,12 @@ interface AppState {
  */
 export function normalizeTab(
   legacy: LegacyTab
-): { tab: AppTab; skillLibrarySubTab?: SkillLibrarySubTab; settingsSubTab?: SettingsSubTab } {
+): { tab: AppTab; skillLibrarySubTab?: SkillLibrarySubTab; workMemorySubTab?: WorkMemorySubTab; settingsSubTab?: SettingsSubTab } {
   switch (legacy) {
     case "dashboard":
-    case "dailySummaries":
       return { tab: "today" };
+    case "dailySummaries":
+      return { tab: "workMemory", workMemorySubTab: "daily" };
     case "skills":
       return { tab: "skillLibrary", skillLibrarySubTab: "skills" };
     case "graph":
@@ -141,6 +146,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   initialized: false,
   activeTab: "today",
   skillLibrarySubTab: "skills",
+  workMemorySubTab: "weekly",
   settingsSubTab: "preferences",
   selectedSkillId: null,
   selectedSkillName: null,
@@ -168,9 +174,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ activeTab: "discover", skillLibrarySubTab: "discover" });
       return;
     }
+    // 周报 / 每日摘要已合并为「工作记忆」页（P4 IA 收敛）。
+    if (tab === "weeklyReport") {
+      set({ activeTab: "workMemory", workMemorySubTab: "weekly" });
+      return;
+    }
+    if (tab === "dailySummaries") {
+      set({ activeTab: "workMemory", workMemorySubTab: "daily" });
+      return;
+    }
     set({ activeTab: tab });
   },
   setSkillLibrarySubTab: (subTab) => set({ skillLibrarySubTab: subTab }),
+  setWorkMemorySubTab: (subTab) => set({ workMemorySubTab: subTab }),
   setSettingsSubTab: (subTab) => set({ settingsSubTab: subTab }),
   navigateToSettings: (subTab) => set({ activeTab: "settings", settingsSubTab: subTab }),
   setSelectedSkillId: (id) => set({ selectedSkillId: id }),

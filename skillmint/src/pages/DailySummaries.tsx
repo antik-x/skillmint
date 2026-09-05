@@ -206,15 +206,6 @@ export default function DailySummaries() {
 
   return (
     <div className="h-full overflow-auto p-8">
-      <div className="mb-6 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">每日摘要</h1>
-          <p className="mt-1 text-sm text-secondary">
-            把每一天与 Agent 的协作沉淀为可回顾的工作记忆
-          </p>
-        </div>
-      </div>
-
       {/* Value metrics */}
       <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
         {metricsLoading

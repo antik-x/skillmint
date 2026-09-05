@@ -17,12 +17,11 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 const Today = lazy(() => import("./pages/Today"));
 const Inbox = lazy(() => import("./pages/Inbox"));
 const GrowthAssets = lazy(() => import("./pages/GrowthAssets"));
-const WeeklyReport = lazy(() => import("./pages/WeeklyReport"));
 const SkillLibrary = lazy(() => import("./pages/SkillLibrary"));
 const Agents = lazy(() => import("./pages/Agents"));
 const Projects = lazy(() => import("./pages/Projects"));
 const Usage = lazy(() => import("./pages/Usage"));
-const DailySummaries = lazy(() => import("./pages/DailySummaries"));
+const WorkMemory = lazy(() => import("./pages/WorkMemory"));
 const Settings = lazy(() => import("./pages/Settings"));
 const Onboarding = lazy(() => import("./pages/Onboarding"));
 
@@ -190,13 +189,12 @@ function App() {
               {activeTab === "agents" && <Agents />}
               {activeTab === "projects" && <Projects />}
               {activeTab === "usage" && <Usage />}
-              {activeTab === "weeklyReport" && <WeeklyReport />}
+              {(activeTab === "workMemory" || activeTab === "weeklyReport" || activeTab === "dailySummaries") && <WorkMemory />}
               {activeTab === "settings" && (
                 <ErrorBoundary>
                   <Settings />
                 </ErrorBoundary>
               )}
-              {activeTab === "dailySummaries" && <DailySummaries />}
             </PageTransition>
           </Suspense>
         </main>
