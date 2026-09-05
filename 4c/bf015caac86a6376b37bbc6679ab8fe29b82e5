@@ -1,0 +1,21 @@
+docs/openviking-integration.md
+  s_3c3bc206d13f62::t_5be2a3a996216e 47-48,96-98
+  s_3c3bc206d13f62::t_2a1df60601eece 1-36,42-46,49-95,99-326
+  s_3c3bc206d13f62::t_5fcd59bb13d5d7 37-41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.6.24",
+  "base_commit_sha": "4cbf015caac86a6376b37bbc6679ab8fe29b82e5",
+  "prompts": {},
+  "sessions": {
+    "s_3c3bc206d13f62": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a071d3-1c7f-7a12-92a9-158f36bb21b2",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "antik-x <jianyong.me@gmail.com>"
+    }
+  }
+}
