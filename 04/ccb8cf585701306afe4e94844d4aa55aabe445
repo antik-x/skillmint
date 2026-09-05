@@ -1,0 +1,32 @@
+docs/OPTIMIZATION-2026-07.md
+  h_04c00a69eeb820 212-222
+skillmint/src-tauri/src/collector.rs
+  h_04c00a69eeb820 67-72
+skillmint/src-tauri/src/commands/sync.rs
+  h_04c00a69eeb820 111-115,122,124,127-133,135
+skillmint/src-tauri/src/db/agents.rs
+  h_04c00a69eeb820 225-226
+skillmint/src-tauri/src/db/mod.rs
+  h_04c00a69eeb820 800-801,806-887,1298-1305,1569-1595
+skillmint/src-tauri/src/db/usage.rs
+  h_04c00a69eeb820 16-24,26,46,51,56,63,73,89-91,93-103,109-215
+skillmint/src-tauri/src/scan.rs
+  h_04c00a69eeb820 102-122
+skillmint/src-tauri/src/tests.rs
+  h_04c00a69eeb820 5076-5337
+skillmint/src/pages/Agents.groups.test.ts
+  h_04c00a69eeb820 1-96
+skillmint/src/pages/Agents.tsx
+  h_04c00a69eeb820 27,138-208,283-285,325-326,328-346,457-459
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.6.24",
+  "base_commit_sha": "04ccb8cf585701306afe4e94844d4aa55aabe445",
+  "prompts": {},
+  "humans": {
+    "h_04c00a69eeb820": {
+      "author": "antik-x <jianyong.me@gmail.com>"
+    }
+  }
+}
