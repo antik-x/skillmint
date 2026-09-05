@@ -1,0 +1,26 @@
+skillmint/src/components/PreferencesPanel.tsx
+  h_04c00a69eeb820 8,15,21-30,116-191
+skillmint/src/lib/npxskills.ts
+  h_04c00a69eeb820 1-199
+skillmint/src/pages/Discover.tsx
+  h_04c00a69eeb820 3-10,134-135,148-151,153,191-222,270-295,457-460,501-520,522-527,911-913,936-954,956-961
+skillmint/src/pages/InstalledSkills.test.tsx
+  h_04c00a69eeb820 1-182
+skillmint/src/pages/InstalledSkills.tsx
+  h_04c00a69eeb820 1-900
+skillmint/src/pages/SkillLibrary.tsx
+  h_04c00a69eeb820 7
+skillmint/src/types/index.ts
+  h_04c00a69eeb820 170-179
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.6.24",
+  "base_commit_sha": "760ccd73a638c3aaa36d1b95ca9be95a70b10173",
+  "prompts": {},
+  "humans": {
+    "h_04c00a69eeb820": {
+      "author": "antik-x <jianyong.me@gmail.com>"
+    }
+  }
+}

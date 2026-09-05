@@ -1,0 +1,40 @@
+skillmint/src-tauri/src/agents_table.rs
+  h_04c00a69eeb820 1-158
+skillmint/src-tauri/src/commands/mod.rs
+  h_04c00a69eeb820 34,43,66-70,1182-1191
+skillmint/src-tauri/src/commands/npxskills.rs
+  h_04c00a69eeb820 1-518
+skillmint/src-tauri/src/db/index_store.rs
+  h_04c00a69eeb820 1-198
+skillmint/src-tauri/src/db/mod.rs
+  h_04c00a69eeb820 26,713-748
+skillmint/src-tauri/src/hub.rs
+  h_04c00a69eeb820 1-467
+skillmint/src-tauri/src/index.rs
+  h_04c00a69eeb820 1-579
+skillmint/src-tauri/src/lib.rs
+  h_04c00a69eeb820 12,20-21,26,32,189-192,197-203,205-206,208,688-708
+skillmint/src-tauri/src/models.rs
+  h_04c00a69eeb820 147-162
+skillmint/src-tauri/src/npx.rs
+  h_04c00a69eeb820 1-625
+skillmint/src-tauri/src/scan.rs
+  h_04c00a69eeb820 9-61,124-125,146,162,170
+skillmint/src-tauri/src/settings.rs
+  h_04c00a69eeb820 143-162,361-377,401-405
+skillmint/src-tauri/src/skills_lock.rs
+  h_04c00a69eeb820 1-211
+skillmint/src-tauri/src/tests.rs
+  h_04c00a69eeb820 90-92,123-126
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.6.24",
+  "base_commit_sha": "c05a0db21b5d4ac2a536367bf751084e169bcb12",
+  "prompts": {},
+  "humans": {
+    "h_04c00a69eeb820": {
+      "author": "antik-x <jianyong.me@gmail.com>"
+    }
+  }
+}

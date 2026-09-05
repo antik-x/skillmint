@@ -1,0 +1,20 @@
+docs/OPTIMIZATION-2026-07.md
+  h_04c00a69eeb820 203-211
+skillmint/src-tauri/src/commands/mod.rs
+  h_04c00a69eeb820 90-95,114-116
+skillmint/src-tauri/src/db/agents.rs
+  h_04c00a69eeb820 6-9,11-19,249-250,253-260
+skillmint/src/App.tsx
+  h_04c00a69eeb820 43-44,71-72,160,166-170,214,227-229
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.6.24",
+  "base_commit_sha": "2f9575d2f76f44d4257e718bdbb1be1a522cd331",
+  "prompts": {},
+  "humans": {
+    "h_04c00a69eeb820": {
+      "author": "antik-x <jianyong.me@gmail.com>"
+    }
+  }
+}

@@ -1,0 +1,18 @@
+AGENTS.md
+  h_04c00a69eeb820 35,38-45,47-70
+README.md
+  h_04c00a69eeb820 22-23,25,29,41,52,72-73,75,79,89,100
+docs/OPTIMIZATION-2026-07.md
+  h_04c00a69eeb820 164-202
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.6.24",
+  "base_commit_sha": "33ba8f0a8c9f4bbabd1218e866d47076262a5226",
+  "prompts": {},
+  "humans": {
+    "h_04c00a69eeb820": {
+      "author": "antik-x <jianyong.me@gmail.com>"
+    }
+  }
+}
