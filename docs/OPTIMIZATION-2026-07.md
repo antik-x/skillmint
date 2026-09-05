@@ -209,6 +209,17 @@
 
 教训：此前只跑了 cargo/vitest + bundle 断言，没有真机启动过——「构建安装成功」≠「能进主界面」。此后每次 build-install 都应 `open` 一次并确认越过启动页。
 
+### P3-10 智能体目录：实时计数 / 分组 / 关联项目清洗 ✅ (2026-09-05)
+
+用户真机报告智能体目录页四个问题，grilling 访谈定案后全修：
+1. **「N 个 Skill」恒为 0**：列表计数走 `agent_directory_skills` 缓存表，而缓存只在点开详情页时填充——没点开过的 agent 全部假 0。`get_agent_skill_counts` 改为**实时扫目录**（`scan::count_skills_in_dir`：含 SKILL.md 的子目录、跟随符号链接、排除 cache/data/marketplaces/node_modules/.git/.trash），删除孤儿缓存计数方法。缓存仅剩详情页技能列表使用。
+2. **分组**：列表拆成两个固定区块——「智能体（Harness）」（有独立 source key 的真实工具）在上、「共享 / 占位目录」（source 为空或 `universal`：canonical `~/.agents/skills`、兜底 `~/.skills`、SkillMint 旧版）在下；组内按技能数降序、平局按名称。旧版遗留行 `Agent → ~/.skillmint/skills` 显示名固定为「SkillMint 旧版目录」（数据保留，仅改名）。
+3. **关联项目脏数据**：projects 表 471 行中 256 行是相对路径碎片（`claude-chrome` 等）、3 行是工具数据目录（`~/.codex/sessions/...`）、大量同路径异拼重复行——Claude Code 显示 177 个项目实际约 102 个。新增规则 `is_linkable_project_path`（须绝对路径且不在 $HOME 隐藏顶级目录下）拦截增量；一次性 migration `project_link_hygiene_done`（带预迁移备份 + 事务 + 哨兵）清洗存量：删幻影项目、按 canonical 路径合并重复、`agent_instances` 与 `project_count`/`last_used_at` 全量重建；`link_sessions_to_projects` 的重算 UPDATE 去掉 `WHERE EXISTS` 守卫（否则失去全部实例的 agent 永远挂着脏计数）。
+4. **source 错配修正（只动了真错配）**：Kimi 采集 tag `kimi-code` 与矩阵 key `kimi-code-cli` 同产品不同拼写 → 常量对齐 + 存量六表改名。**Antigravity 故意不动**：`SOURCE_ANTIGRAVITY="antigravity"` 采集的是 Antigravity **IDE**（`~/.gemini/antigravity/brain`），与矩阵里的 `antigravity-cli`（CLI）是两个产品——IDE 会话不归属到 CLI agent 是语义正确，`trae-solo` 同理（独立产品，无对应 agent）。
+5. **覆盖面结论（不改代码）**：扫描 = 77 agent 静态矩阵 global 目录 + 资源目录 + `~/.skills` 兜底，逐目录存在性判定、按 `(name, source)` 合并 "one Agent per tool"；真机核查所有实际存在的 skills 全局目录均已入表，无遗漏，使用中但无目录的来源不造占位行。
+
+**验收**：cargo test 245✓（+4：计数口径/路径规则/关联跳过/迁移清洗）、vitest 163✓（+8：分组判据/旧版改名/区块排序）、tsc ✓；真机 `make build-install` + 启动截图验证分组、计数、关联项目。
+
 ### P3-8 多角色审查修复 ✅ (2026-09-05)
 
 虚拟五类用户（新装机/CLI 老手/团队协作/国内网络/老版本升级）走查后修复：

@@ -24,7 +24,7 @@ import { Badge } from "../components/ui/Badge";
 import { EmptyState } from "../components/ui/EmptyState";
 import { SkeletonCard, SkeletonList } from "../components/ui/Skeleton";
 import { VirtualList } from "../components/ui/VirtualList";
-import type { AgentDetail, AgentDirectory, AgentSkillItem } from "../types";
+import type { Agent, AgentDetail, AgentDirectory, AgentSkillItem } from "../types";
 
 /**
  * SPEC-F6 T1: 返回单个 Agent 的显示名。
@@ -135,6 +135,77 @@ function rawOrCandidates(a: { name?: string; skill_directory?: string; id?: stri
   return list;
 }
 
+// ----- P3-10：分组与旧版行改名 ---------------------------------------------
+
+/** 分组：harness = 拥有自己专属全局 Skills 目录的真实工具；shared = 共享/占位
+ * 目录（npx skills 的 canonical 仓库 `~/.agents/skills`、兜底 `~/.skills`、
+ * SkillMint 旧版目录——它们的 source 为空或 "universal"，没有独立的工具身份）。 */
+export type AgentGroupKey = "harness" | "shared";
+
+export const AGENT_GROUP_LABELS: Record<AgentGroupKey, string> = {
+  harness: "智能体（Harness）",
+  shared: "共享 / 占位目录",
+};
+
+/** 依采集归一化 key 判定分组：空 或 "universal" → 共享/占位，其余 → harness。 */
+export function agentGroup(agent: { source?: string | null }): AgentGroupKey {
+  const source = (agent.source ?? "").trim();
+  return source === "" || source === "universal" ? "shared" : "harness";
+}
+
+/** 旧版遗留行（P3 之前构建写入 DB 的 `Agent → ~/.skillmint/skills`）的固定
+ * 显示名。数据保留（目录里还有技能），只是不再顶着一个无法辨识的名字。 */
+export function legacyAgentDisplayName(agent: {
+  skill_directory?: string;
+}): string | null {
+  const dir = agent.skill_directory ?? "";
+  if (dir === "~/.skillmint/skills" || dir.endsWith("/.skillmint/skills")) {
+    return "SkillMint 旧版目录";
+  }
+  return null;
+}
+
+export interface AgentHeaderRow {
+  kind: "header";
+  key: string;
+  title: string;
+  count: number;
+}
+
+export interface AgentItemRow {
+  kind: "agent";
+  key: string;
+  agent: Agent;
+}
+
+export type AgentRow = AgentHeaderRow | AgentItemRow;
+
+/** 把 agent 列表拆成两个固定区块（Harness 在上、共享/占位在下），组内按技能
+ * 数降序、并列按名称排序。技能数未加载完成时视为 -1（沉底，加载后重排）。 */
+export function buildAgentRows(
+  agents: Agent[],
+  skillCounts: Record<string, number>,
+): AgentRow[] {
+  const byCountDesc = (a: Agent, b: Agent) =>
+    (skillCounts[b.id] ?? -1) - (skillCounts[a.id] ?? -1) ||
+    a.name.localeCompare(b.name, "zh");
+  const rows: AgentRow[] = [];
+  for (const group of ["harness", "shared"] as const) {
+    const members = agents.filter((a) => agentGroup(a) === group).sort(byCountDesc);
+    if (members.length === 0) continue;
+    rows.push({
+      kind: "header",
+      key: `header:${group}`,
+      title: AGENT_GROUP_LABELS[group],
+      count: members.length,
+    });
+    for (const agent of members) {
+      rows.push({ kind: "agent", key: agent.id, agent });
+    }
+  }
+  return rows;
+}
+
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
@@ -209,6 +280,9 @@ export default function Agents() {
     setSelectedId(null);
   }, []);
 
+  // P3-10：两个固定分组（Harness 在上、共享/占位在下），组内按技能数降序。
+  const rows = useMemo(() => buildAgentRows(agents, skillCounts), [agents, skillCounts]);
+
   if (selectedId) {
     return <AgentDetailView agentId={selectedId} onBack={handleBack} />;
   }
@@ -248,19 +322,28 @@ export default function Agents() {
       ) : (
         <Card className="flex-1 overflow-hidden p-0" variant="default" padding="none">
           <VirtualList
-            items={agents}
-            estimateSize={88}
+            items={rows}
+            estimateSize={72}
             className="h-full"
-            renderItem={(agent) => (
-              <AgentListItem
-                agent={agent}
-                displayName={agentDisplayName(agent, agents)}
-                skillCount={skillCounts[agent.id]}
-                countsLoading={countsLoading}
-                onClick={handleSelect}
-              />
-            )}
-            getItemKey={(agent) => agent.id}
+            renderItem={(row) =>
+              row.kind === "header" ? (
+                <div className="flex items-center justify-between border-b border-[var(--divider)] bg-secondary/60 px-6 py-2">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-secondary">
+                    {row.title}
+                  </span>
+                  <span className="text-xs text-tertiary">{row.count} 个</span>
+                </div>
+              ) : (
+                <AgentListItem
+                  agent={row.agent}
+                  displayName={legacyAgentDisplayName(row.agent) ?? agentDisplayName(row.agent, agents)}
+                  skillCount={skillCounts[row.agent.id]}
+                  countsLoading={countsLoading}
+                  onClick={handleSelect}
+                />
+              )
+            }
+            getItemKey={(row) => row.key}
           />
         </Card>
       )}
@@ -371,7 +454,9 @@ function AgentDetailView({ agentId, onBack }: { agentId: string; onBack: () => v
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h1 className="text-2xl font-semibold text-primary">{agentDisplayName(detail)}</h1>
+                <h1 className="text-2xl font-semibold text-primary">
+                  {legacyAgentDisplayName(detail) ?? agentDisplayName(detail)}
+                </h1>
                 <Badge variant={detail.is_enabled ? "success" : "default"} size="sm">
                   {detail.is_enabled ? "已启用" : "已禁用"}
                 </Badge>

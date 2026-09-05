@@ -99,6 +99,27 @@ pub fn is_excluded_scan_name(name: &str, extra: &[String]) -> bool {
     DEFAULT_SCAN_EXCLUSIONS.contains(&name) || extra.iter().any(|n| n == name)
 }
 
+/// P3-10: live skill count for one directory — same criteria as the
+/// detail-page scan (`is_skill_dir` + name exclusions), but count-only, so the
+/// agents list never depends on the on-demand `agent_directory_skills` cache.
+pub fn count_skills_in_dir(dir: &std::path::Path, extra: &[String]) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                return false;
+            };
+            !name.is_empty()
+                && !is_excluded_scan_name(name, extra)
+                && is_skill_dir(&entry.path())
+        })
+        .count()
+}
+
 /// Canonical agent id for a tool name (PRD-06: stable, directory-independent slug).
 fn agent_id_for(name: &str) -> String {
     format!("agent-{}", name.to_lowercase().replace(' ', "-"))

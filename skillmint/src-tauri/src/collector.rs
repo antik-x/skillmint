@@ -64,7 +64,12 @@ pub const SOURCE_TRAE: &str = "trae";
 pub const SOURCE_TRAE_CN: &str = "trae-cn";
 pub const SOURCE_TRAE_SOLO: &str = "trae-solo";
 /// Kimi Code CLI (native wire.jsonl format; tokens + prompts persisted locally).
-pub const SOURCE_KIMI_CODE: &str = "kimi-code";
+/// P3-10: value aligned with the agents_table matrix key `kimi-code-cli` —
+/// attribution is `collected_sessions.source == agents.source` string equality,
+/// so the tag must spell the product the same way the agent row does. (Note
+/// SOURCE_ANTIGRAVITY stays "antigravity": that collector reads the Antigravity
+/// *IDE* brain dirs, a different product from the `antigravity-cli` matrix key.)
+pub const SOURCE_KIMI_CODE: &str = "kimi-code-cli";
 
 /// PRD-08: per-source capability flags. Tells the analysis engine which signals
 /// a source contributes honestly. Mirrors AI-Digest `TOOL_CAPABILITIES`. A flag

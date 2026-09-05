@@ -797,7 +797,91 @@ impl Db {
         self.migrate_agent_entity_v2()?;
         // PRD-08: seed the analysis dimension tables (pricing + tool caps) once.
         self.migrate_digest_dimensions()?;
+        // P3-10: one-time cleanup of phantom projects + Kimi tag alignment.
+        self.migrate_project_link_hygiene(device_id)?;
 
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // P3-10: project-link hygiene migration.
+    //
+    // One-time repair of the agent↔project association data (the detail page's
+    // 「关联项目」), which had accumulated three classes of garbage:
+    //   1. Phantom projects: collectors recorded bare relative cwds
+    //      (`claude-chrome`) or paths inside a tool's own data dir
+    //      (`~/.codex/sessions/...`) as project_path → projects rows that are
+    //      not projects.
+    //   2. Duplicate spellings of the same physical path, inflating
+    //      agents.project_count (Claude Code showed 177 vs ~102 real ones).
+    //   3. Stale counters on agents whose instances had been wiped.
+    // Also aligns the Kimi collector tag with its agents_table key
+    // (`kimi-code` → `kimi-code-cli`) in every stored row, so the
+    // source-equality attribution matches without aliases. SOURCE_ANTIGRAVITY
+    // is intentionally untouched: it collects the Antigravity *IDE*, a
+    // different product from the `antigravity-cli` matrix key.
+    // Idempotent via the `project_link_hygiene_done` sentinel; takes a
+    // pre-migration backup because it deletes rows.
+    // -------------------------------------------------------------------------
+    fn migrate_project_link_hygiene(&mut self, device_id: &str) -> Result<()> {
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )?;
+        let done: bool = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM schema_meta WHERE key = 'project_link_hygiene_done'",
+                [],
+                |_| Ok(()),
+            )
+            .is_ok();
+        if done {
+            return Ok(());
+        }
+
+        self.backup_before_migration();
+
+        // 1. Rename the Kimi collector tag to the matrix key in every table
+        //    that stores a source column.
+        for table in [
+            "collected_sessions",
+            "collected_prompts",
+            "collected_token_usage",
+            "skill_usage_attributions",
+            "collector_file_states",
+            "collected_sources",
+        ] {
+            let sql = format!(
+                "UPDATE {table} SET source = 'kimi-code-cli' WHERE source = 'kimi-code'"
+            );
+            if let Err(e) = self.conn.execute(&sql, []) {
+                // Defensive: every listed table exists in this schema, but a
+                // partial schema must not block boot.
+                eprintln!("[migration] kimi tag rename skipped for {table}: {e}");
+            }
+        }
+
+        // 2. Rebuild the association data inside one transaction.
+        let tx = self.conn.transaction()?;
+        match Self::rebuild_project_links_tx(&tx, device_id) {
+            Ok((phantom, merged, linked)) => {
+                tx.commit()?;
+                eprintln!(
+                    "[migration] project link hygiene: {phantom} phantom projects removed, \
+                     {merged} duplicates merged, {linked} sessions relinked"
+                );
+            }
+            Err(e) => {
+                let _ = tx.rollback();
+                anyhow::bail!("project link hygiene migration failed (rolled back): {e}");
+            }
+        }
+
+        self.conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('project_link_hygiene_done', '1')",
+            [],
+        )?;
         Ok(())
     }
 
@@ -1211,7 +1295,14 @@ impl Db {
         device_id: &str,
         raw_path: &str,
     ) -> Result<Option<String>> {
-        let normalized = normalize_path(raw_path);
+        let normalized = {
+            // P3-10: only plausible working directories become projects — see
+            // `is_linkable_project_path` for the garbage this keeps out.
+            if !is_linkable_project_path(raw_path) {
+                return Ok(None);
+            }
+            normalize_path(raw_path)
+        };
         if normalized.is_empty() {
             return Ok(None);
         }
@@ -1473,6 +1564,33 @@ fn normalize_path(raw: &str) -> String {
     std::fs::canonicalize(&expanded)
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| expanded.to_string_lossy().to_string())
+}
+
+/// P3-10: only plausible working directories become project rows. Collectors
+/// occasionally record garbage cwds — relative fragments (`claude-chrome`) or
+/// the inside of a tool's own data dir (`~/.codex/sessions/2026/07`) — and
+/// linking those produced phantom projects that inflated 关联项目 counts.
+/// Rule: non-empty, absolute, and — when under $HOME — not inside a hidden
+/// (dot) top-level directory, which is where every known agent keeps its data.
+pub(crate) fn is_linkable_project_path(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let expanded = crate::scan::expand_path(trimmed);
+    if !expanded.is_absolute() {
+        return false;
+    }
+    if let Some(home) = dirs::home_dir() {
+        if let Ok(rel) = expanded.strip_prefix(&home) {
+            if let Some(first) = rel.components().next() {
+                if first.as_os_str().to_string_lossy().starts_with('.') {
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }
 
 fn parse_sync_mode(s: &str) -> SyncMode {

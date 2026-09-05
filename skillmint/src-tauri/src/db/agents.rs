@@ -222,28 +222,8 @@ impl Db {
     }
 
     /// Batch count of cached skills per agent, scoped to each agent's primary skill_directory.
-    pub fn count_agent_directory_skills(
-        &self,
-        agent_id_to_path: &[(String, PathBuf)],
-    ) -> Result<HashMap<String, usize>> {
-        let mut counts: HashMap<String, usize> = HashMap::new();
-        if agent_id_to_path.is_empty() {
-            return Ok(counts);
-        }
-        // SQLite does not support tuple IN, so query per agent. The batch is typically small
-        // (tens of agents) and this keeps the query simple and indexed.
-        let mut stmt = self.conn.prepare(
-            "SELECT COUNT(*) FROM agent_directory_skills WHERE agent_id = ?1 AND path = ?2",
-        )?;
-        for (agent_id, path) in agent_id_to_path {
-            let n: i64 = stmt.query_row(
-                params![agent_id, path.to_string_lossy().to_string()],
-                |row| row.get(0),
-            )?;
-            counts.insert(agent_id.clone(), n as usize);
-        }
-        Ok(counts)
-    }
+    /// P3-10: removed — the agents list counts live via `scan::count_skills_in_dir`;
+    /// the cache is only consulted by the detail-page skill list.
 
     pub fn delete_agent(&self, id: &str) -> Result<()> {
         // P3 startup fix: child rows must go (or detach) before the parent, or

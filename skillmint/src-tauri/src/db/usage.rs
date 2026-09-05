@@ -13,8 +13,17 @@ impl Db {
     /// Link collected sessions that carry a `project_path` to the projects table,
     /// and upsert agent_instances counts. Returns the number of sessions linked.
     pub fn link_sessions_to_projects(&self, device_id: &str) -> Result<i64> {
+        Self::link_sessions_to_projects_conn(&self.conn, device_id)
+    }
+
+    /// Transaction-aware core of `link_sessions_to_projects` (P3-10): the
+    /// hygiene migration re-runs the whole linking pass inside its transaction.
+    pub fn link_sessions_to_projects_conn(
+        conn: &rusqlite::Connection,
+        device_id: &str,
+    ) -> Result<i64> {
         // Read all (session_id, source, project_path, start_time) that are unlinked.
-        let mut stmt = self.conn.prepare(
+        let mut stmt = conn.prepare(
             "SELECT id, source, project_path, start_time FROM collected_sessions
              WHERE project_path IS NOT NULL AND project_path <> ''",
         )?;
@@ -34,25 +43,24 @@ impl Db {
 
         let mut linked = 0i64;
         for (session_id, source, path, start_ts) in rows {
-            let project_id = match self.ensure_project_by_path(device_id, &path)? {
+            let project_id = match Self::ensure_project_by_path_conn(conn, device_id, &path)? {
                 Some(p) => p,
                 None => continue,
             };
             // Update the session's project_id.
-            self.conn.execute(
+            conn.execute(
                 "UPDATE collected_sessions SET project_id = ?1 WHERE id = ?2",
                 params![project_id, session_id],
             )?;
             // Update token_usage rows for this session to carry the project_id too.
-            self.conn.execute(
+            conn.execute(
                 "UPDATE collected_token_usage SET project_id = ?1 WHERE session_id = ?2",
                 params![project_id, session_id],
             )?;
             // PRD-06 §3.2: attribute the session to an Agent via `agents.source`
             // (deterministic equality), replacing the old `derive_agent_id` hack.
             // If no Agent carries this source, skip attribution but still link the project.
-            let agent_key: Option<String> = self
-                .conn
+            let agent_key: Option<String> = conn
                 .query_row(
                     "SELECT id FROM agents WHERE source = ?1 LIMIT 1",
                     params![&source],
@@ -62,7 +70,7 @@ impl Db {
             if let Some(agent_key) = agent_key {
                 let ai_id = format!("{device_id}:{agent_key}:{project_id}");
                 let now = now_secs();
-                self.conn.execute(
+                conn.execute(
                     r#"INSERT INTO agent_instances
                        (id, device_id, agent_id, project_id, last_session_at, session_count,
                         total_tokens, total_prompts, created_at, updated_at)
@@ -78,21 +86,131 @@ impl Db {
         }
 
         // Populate agents.last_used_at and project_count from agent_instances (PRD-01 §5.1).
+        // P3-10: update every agent — the old `WHERE EXISTS` guard left stale
+        // counts on agents whose instances were wiped (e.g. by the hygiene
+        // migration after their sessions turned out to be phantom links).
         let now = now_secs();
-        self.conn.execute(
-            r#"UPDATE agents SET last_used_at = (
-                  SELECT MAX(ai.last_session_at) FROM agent_instances ai
-                  WHERE ai.agent_id = agents.id
-               ),
-               project_count = (
-                  SELECT COUNT(DISTINCT ai.project_id) FROM agent_instances ai
-                  WHERE ai.agent_id = agents.id
-               ),
-               updated_at = ?1
-               WHERE EXISTS (SELECT 1 FROM agent_instances ai WHERE ai.agent_id = agents.id)"#,
+        conn.execute(
+            r#"UPDATE agents SET
+                 last_used_at = (
+                    SELECT MAX(ai.last_session_at) FROM agent_instances ai
+                    WHERE ai.agent_id = agents.id
+                 ),
+                 project_count = (
+                    SELECT COUNT(DISTINCT ai.project_id) FROM agent_instances ai
+                    WHERE ai.agent_id = agents.id
+                 ),
+                 updated_at = ?1"#,
             params![now],
         )?;
         Ok(linked)
+    }
+
+    /// P3-10: full rebuild of the agent↔project association data from
+    /// `collected_sessions`. Drops phantom projects (relative cwds, tool data
+    /// dirs — see `is_linkable_project_path`), merges duplicate spellings of the
+    /// same path, then resets all session links and re-runs the linking pass so
+    /// `agent_instances` / `agents.project_count` / `last_used_at` are derived
+    /// from clean data. Runs inside the caller's transaction (hygiene migration).
+    /// Returns (phantom_projects_removed, duplicates_merged, sessions_linked).
+    pub fn rebuild_project_links_tx(
+        tx: &rusqlite::Transaction<'_>,
+        device_id: &str,
+    ) -> Result<(usize, usize, i64)> {
+        // 1. Wipe agent_instances — rebuilt from scratch below.
+        tx.execute("DELETE FROM agent_instances", [])?;
+
+        // 2. Classify existing projects.
+        let mut stmt = tx.prepare("SELECT id, path FROM projects")?;
+        let rows: Vec<(String, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        let mut phantom: Vec<String> = Vec::new();
+        // (device_id, normalized path) -> [(id, path, created_at)]
+        let mut groups: std::collections::HashMap<(String, String), Vec<(String, String, i64)>> =
+            std::collections::HashMap::new();
+        for (id, path) in rows {
+            if !is_linkable_project_path(&path) {
+                phantom.push(id);
+                continue;
+            }
+            let normalized = normalize_path(&path);
+            let created: i64 = tx
+                .query_row(
+                    "SELECT COALESCE(created_at, 0) FROM projects WHERE id = ?1",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            groups
+                .entry((device_id.to_string(), normalized))
+                .or_default()
+                .push((id, path, created));
+        }
+
+        // 3. Drop phantom projects; detach child references first (the FKs on
+        //    skill_project_bindings have no cascade).
+        for id in &phantom {
+            tx.execute(
+                "UPDATE skill_project_bindings SET project_id = NULL WHERE project_id = ?1",
+                params![id],
+            )?;
+            tx.execute("DELETE FROM projects WHERE id = ?1", params![id])?;
+        }
+
+        // 4. Merge duplicate spellings of the same physical project. Keeper:
+        //    the row already spelled exactly like the normalized path, else the
+        //    earliest created. The keeper's path is rewritten to the normalized
+        //    spelling so re-linking cannot resurrect the duplicates.
+        let mut merged = 0usize;
+        for ((_device, normalized), mut entries) in groups {
+            if entries.len() <= 1 {
+                continue;
+            }
+            entries.sort_by(|a, b| {
+                let a_exact = a.1 == normalized;
+                let b_exact = b.1 == normalized;
+                b_exact.cmp(&a_exact).then_with(|| a.2.cmp(&b.2))
+            });
+            let (keeper_id, keeper_path, _) = entries[0].clone();
+            if keeper_path != normalized {
+                tx.execute(
+                    "UPDATE projects SET path = ?1 WHERE id = ?2",
+                    params![normalized, keeper_id],
+                )?;
+            }
+            for (dup_id, _, _) in entries.iter().skip(1) {
+                tx.execute(
+                    "UPDATE collected_sessions SET project_id = ?1 WHERE project_id = ?2",
+                    params![keeper_id, dup_id],
+                )?;
+                tx.execute(
+                    "UPDATE collected_token_usage SET project_id = ?1 WHERE project_id = ?2",
+                    params![keeper_id, dup_id],
+                )?;
+                // UPDATE OR IGNORE: a binding may already exist for the keeper
+                // (UNIQUE device/skill/project/agent) — dropping the dup copy is
+                // the desired dedup, not a failure.
+                tx.execute(
+                    "UPDATE OR IGNORE skill_project_bindings SET project_id = ?1 WHERE project_id = ?2",
+                    params![keeper_id, dup_id],
+                )?;
+                tx.execute("DELETE FROM projects WHERE id = ?1", params![dup_id])?;
+                merged += 1;
+            }
+        }
+
+        // 5. Reset every session link and agent counter, then relink cleanly.
+        //    Sessions whose path is unlinkable keep project_id NULL — that is
+        //    the point: no more phantom rows.
+        tx.execute("UPDATE collected_sessions SET project_id = NULL", [])?;
+        tx.execute("UPDATE collected_token_usage SET project_id = NULL", [])?;
+        tx.execute("UPDATE agents SET project_count = 0, last_used_at = NULL", [])?;
+        let linked = Self::link_sessions_to_projects_conn(tx, device_id)?;
+        Ok((phantom.len(), merged, linked))
     }
 
     /// Look up a skill id by name (case-insensitive). Returns None if no such skill.

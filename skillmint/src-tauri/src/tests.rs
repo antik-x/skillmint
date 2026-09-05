@@ -5073,3 +5073,265 @@ fn c1_rule_gate_rows_listed_alongside_other_reasons() {
     let rg = db.list_gate_rejections(Some("rule_gate"), 100).unwrap();
     assert_eq!(rg.len(), 1);
 }
+
+// =============================================================================
+// P3-10: agents-page live counts + project-link hygiene
+// =============================================================================
+
+#[test]
+fn test_count_skills_in_dir_follows_links_and_excludes_support_dirs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("skills");
+    std::fs::create_dir_all(&dir).unwrap();
+    create_agent_skill(&dir, "alpha", "a");
+    create_agent_skill(&dir, "beta", "b");
+    // Support dir (excluded by name) even when it contains a SKILL.md.
+    create_agent_skill(&dir, "cache", "c");
+    // A symlinked skill counts (is_skill_dir follows links); a bare dir
+    // without SKILL.md does not.
+    let target = tmp.path().join("elsewhere");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("SKILL.md"), "g").unwrap();
+    std::os::unix::fs::symlink(&target, dir.join("linked")).unwrap();
+    std::fs::create_dir_all(dir.join("empty")).unwrap();
+
+    assert_eq!(crate::scan::count_skills_in_dir(&dir, &[]), 3);
+    // Missing directory → 0, never an error.
+    assert_eq!(crate::scan::count_skills_in_dir(&tmp.path().join("nope"), &[]), 0);
+}
+
+#[test]
+fn test_is_linkable_project_path_rules() {
+    // Relative cwd fragments (recorded bare in some session jsonl) never mint
+    // projects.
+    assert!(!crate::db::is_linkable_project_path("claude-chrome"));
+    assert!(!crate::db::is_linkable_project_path("agents-feishu"));
+    assert!(!crate::db::is_linkable_project_path(""));
+    assert!(!crate::db::is_linkable_project_path("   "));
+    // Paths inside a hidden top-level dir under $HOME are tool data dirs.
+    let home = dirs::home_dir().unwrap();
+    assert!(!crate::db::is_linkable_project_path(
+        home.join(".codex/sessions/2026/07").to_str().unwrap()
+    ));
+    assert!(!crate::db::is_linkable_project_path("~/.claude/projects/encoded"));
+    assert!(!crate::db::is_linkable_project_path("~/.skillmint/skills"));
+    // Real absolute workdirs are fine.
+    assert!(crate::db::is_linkable_project_path(
+        home.join("projects/real-one").to_str().unwrap()
+    ));
+    assert!(crate::db::is_linkable_project_path("/tmp/elsewhere-proj"));
+}
+
+#[test]
+fn test_linking_skips_unlinkable_paths() {
+    let (tmp, db, _settings) = setup_test_env();
+    let device = "test-device-0001";
+    db.conn()
+        .execute(
+            "INSERT INTO agents (id, name, skill_directory, is_enabled, source)
+             VALUES ('agent-x', 'Agent X', '/tmp/agent-x-skills', 1, 'claude-code')",
+            [],
+        )
+        .unwrap();
+
+    let real = tmp.path().join("real-proj");
+    std::fs::create_dir_all(&real).unwrap();
+
+    for (sid, path) in [
+        ("s-real", real.to_string_lossy().to_string()),
+        ("s-rel", "claude-chrome".to_string()),
+        ("s-data", "~/.codex/sessions/2026/07".to_string()),
+    ] {
+        db.conn()
+            .execute(
+                "INSERT INTO collected_sessions (id, device_id, source, project_path, start_time)
+                 VALUES (?1, ?2, 'claude-code', ?3, 1700000000)",
+                rusqlite::params![sid, device, path],
+            )
+            .unwrap();
+    }
+
+    let linked = db.link_sessions_to_projects(device).unwrap();
+    assert_eq!(linked, 1, "only the linkable session is counted as linked");
+
+    // Exactly one project survives: the absolute, non-data-dir one, stored
+    // under its canonical spelling (the id is minted, don't pin it).
+    let mut stmt = db.conn().prepare("SELECT path FROM projects").unwrap();
+    let paths: Vec<String> = stmt
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+    let canon = std::fs::canonicalize(&real).unwrap().to_string_lossy().to_string();
+    assert_eq!(paths, vec![canon]);
+
+    // Attribution still works for the surviving project.
+    let pc: i64 = db
+        .conn()
+        .query_row(
+            "SELECT project_count FROM agents WHERE id = 'agent-x'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(pc, 1);
+}
+
+#[test]
+fn test_project_link_hygiene_migration_cleans_and_rebuilds() {
+    let (tmp, mut db, _settings) = setup_test_env();
+    let device = "test-device-0001";
+    let now = now_secs_val();
+    let home = dirs::home_dir().unwrap();
+
+    // Agents: claude-code with an inflated counter, kimi under the new key.
+    db.conn()
+        .execute(
+            "INSERT INTO agents (id, name, skill_directory, is_enabled, source, project_count, last_used_at)
+             VALUES ('agent-cc', 'Claude Code', '/tmp/cc-skills', 1, 'claude-code', 999, 1)",
+            [],
+        )
+        .unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO agents (id, name, skill_directory, is_enabled, source)
+             VALUES ('agent-kimi', 'Kimi Code CLI', '/tmp/kimi-skills', 1, 'kimi-code-cli')",
+            [],
+        )
+        .unwrap();
+
+    // Phantom project (relative cwd) with a stale instance row.
+    db.conn()
+        .execute(
+            "INSERT INTO projects (id, device_id, name, path, created_at)
+             VALUES ('p-phantom', ?1, 'claude-chrome', 'claude-chrome', ?2)",
+            rusqlite::params![device, now],
+        )
+        .unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO agent_instances (id, device_id, agent_id, project_id, session_count)
+             VALUES ('ai-phantom', ?1, 'agent-cc', 'p-phantom', 5)",
+            rusqlite::params![device],
+        )
+        .unwrap();
+
+    // Tool-data-dir project (sessions run from inside ~/.codex/sessions).
+    db.conn()
+        .execute(
+            "INSERT INTO projects (id, device_id, name, path, created_at)
+             VALUES ('p-data', ?1, '07', ?2, ?3)",
+            rusqlite::params![device, home.join(".codex/sessions/2026/07").to_string_lossy(), now],
+        )
+        .unwrap();
+
+    // Duplicate spellings of one real dir (on disk so canonicalize resolves).
+    let real = tmp.path().join("real-proj");
+    std::fs::create_dir_all(&real).unwrap();
+    let canon = std::fs::canonicalize(&real).unwrap().to_string_lossy().to_string();
+    db.conn()
+        .execute(
+            "INSERT INTO projects (id, device_id, name, path, created_at)
+             VALUES ('p-a', ?1, 'real-proj', ?2, ?3)",
+            rusqlite::params![device, canon, now],
+        )
+        .unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO projects (id, device_id, name, path, created_at)
+             VALUES ('p-b', ?1, 'real-proj', ?2, ?3)",
+            rusqlite::params![device, format!("{canon}/"), now],
+        )
+        .unwrap();
+
+    // Sessions: the two dup spellings, plus a Kimi session carrying the OLD tag.
+    db.conn()
+        .execute(
+            "INSERT INTO collected_sessions (id, device_id, source, project_id, project_path, start_time)
+             VALUES ('s1', ?1, 'claude-code', 'p-a', ?2, 1700000000)",
+            rusqlite::params![device, canon],
+        )
+        .unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO collected_sessions (id, device_id, source, project_id, project_path, start_time)
+             VALUES ('s2', ?1, 'claude-code', 'p-b', ?2, 1700000001)",
+            rusqlite::params![device, format!("{canon}/")],
+        )
+        .unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO collected_sessions (id, device_id, source, project_path, start_time)
+             VALUES ('s3', ?1, 'kimi-code', ?2, 1700000002)",
+            rusqlite::params![device, canon],
+        )
+        .unwrap();
+
+    // Clear the sentinel and re-run init to trigger the hygiene migration.
+    db.conn()
+        .execute(
+            "DELETE FROM schema_meta WHERE key = 'project_link_hygiene_done'",
+            [],
+        )
+        .unwrap();
+    db.init(device).unwrap();
+
+    // Phantom + data-dir projects gone; duplicate spelling merged into p-a.
+    let count: i64 = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 1, "only the canonical real project survives");
+
+    // Session links rebuilt: every session points at the surviving project.
+    let unlinked: i64 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM collected_sessions WHERE project_id IS NULL OR project_id <> 'p-a'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(unlinked, 0);
+
+    // Kimi tag aligned with the matrix key → attributed to the agent.
+    let kimi_tag: String = db
+        .conn()
+        .query_row(
+            "SELECT source FROM collected_sessions WHERE id = 's3'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kimi_tag, "kimi-code-cli");
+    let kimi_projects: i64 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM agent_instances WHERE agent_id = 'agent-kimi'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kimi_projects, 1);
+
+    // Counters rebuilt from clean data (agent-cc was 999 before).
+    let cc_pc: i64 = db
+        .conn()
+        .query_row(
+            "SELECT project_count FROM agents WHERE id = 'agent-cc'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(cc_pc, 1);
+    let stale: i64 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM agent_instances WHERE project_id = 'p-phantom'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stale, 0, "stale instance rows are wiped by the rebuild");
+}

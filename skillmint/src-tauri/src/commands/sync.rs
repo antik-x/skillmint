@@ -108,26 +108,31 @@ pub fn scan_agent_skills(
     Ok(items)
 }
 
-/// Batch count cached skills for multiple agents, scoped to each agent's primary
-/// skill_directory. Returns an empty record for agents with no cached scan yet.
+/// Batch count skills for multiple agents, scoped to each agent's primary
+/// skill_directory. P3-10: computed live from the filesystem (same criteria as
+/// the detail-page scan) instead of the `agent_directory_skills` cache — that
+/// cache is only populated when a detail page is opened, so the cache-first
+/// version showed a false 0 for every agent the user had never inspected.
 #[tauri::command]
 pub fn get_agent_skill_counts(
     agent_ids: Vec<String>,
     state: State<'_, AppState>,
 ) -> Result<HashMap<String, usize>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
+    let settings = state.settings.lock().map_err(|e| e.to_string())?;
     let agents = db.get_agents().map_err(|e| e.to_string())?;
-    let mapping: Vec<(String, std::path::PathBuf)> = agent_ids
+    Ok(agent_ids
         .into_iter()
         .filter_map(|id| {
-            agents
-                .iter()
-                .find(|a| a.id == id)
-                .map(|a| (id, a.skill_directory.clone()))
+            agents.iter().find(|a| a.id == id).map(|a| {
+                let count = crate::scan::count_skills_in_dir(
+                    &a.skill_directory,
+                    &settings.scan_exclude_names,
+                );
+                (id, count)
+            })
         })
-        .collect();
-    db.count_agent_directory_skills(&mapping)
-        .map_err(|e| e.to_string())
+        .collect())
 }
 
 /// PRD-06 §3.3 (P1): scan ONE directory (an agent's secondary directory, e.g.
