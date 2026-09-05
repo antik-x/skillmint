@@ -1,0 +1,44 @@
+docs/OPTIMIZATION-2026-07.md
+  h_04c00a69eeb820 203-213
+skillmint/src-tauri/src/commands/mod.rs
+  h_04c00a69eeb820 17,27,1397-1402,1406-1407,1413,1420-1424,1427-1438,1441,1443-1456,1458-1466,1469-1470,1562,1564,1566-1568
+skillmint/src-tauri/src/commands/npxskills.rs
+  h_04c00a69eeb820 334-336,339,342-343,347-353
+skillmint/src-tauri/src/commands/repair.rs
+  h_04c00a69eeb820 2
+skillmint/src-tauri/src/commands/sync.rs
+  h_04c00a69eeb820 4-7,9,19-20,22
+skillmint/src-tauri/src/commands/trash.rs
+  h_04c00a69eeb820 28-29,32-37,41,61,63-98,101,103,106-108,110,115-117
+skillmint/src-tauri/src/discovery/mod.rs
+  h_04c00a69eeb820 9,216,226-227,233-236,240,242,254,258,260-261,268,288-334
+skillmint/src-tauri/src/discovery/tests.rs
+  h_04c00a69eeb820 396,398-402,404,406-409,420-422,424-425,427,587-589,591-607,611-613,615-617,619-623
+skillmint/src-tauri/src/tests.rs
+  h_04c00a69eeb820 4923,4925-4926,4929,4931-4932,4934-4944,4948,4950-4951,4954-4957,4959-4960,4963,4965,4969-4980,4982-4990
+skillmint/src/components/TrashPanel.tsx
+  h_04c00a69eeb820 69,73,201-202
+skillmint/src/pages/Inbox.tsx
+  h_04c00a69eeb820 271-273,478,571
+skillmint/src/pages/InboxThreeChoice.test.tsx
+  h_04c00a69eeb820 162-165,187,191
+skillmint/src/pages/InstalledSkills.test.tsx
+  h_04c00a69eeb820 85
+skillmint/src/pages/InstalledSkills.tsx
+  h_04c00a69eeb820 19,23,41,64-65,89-91,125-132,484-487,576-583,664-668,731-734,787-795
+skillmint/src/pages/Today.tsx
+  h_04c00a69eeb820 1,3,122-149,507-508,975,977-978,980,982-983,985-987,999-1001,1003,1006-1011,1016,1019
+skillmint/src/pages/Usage.tsx
+  h_04c00a69eeb820 1320-1321,1324-1325,1327
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.6.24",
+  "base_commit_sha": "75043124d344c67c613e0d9e11878c35199900db",
+  "prompts": {},
+  "humans": {
+    "h_04c00a69eeb820": {
+      "author": "antik-x <jianyong.me@gmail.com>"
+    }
+  }
+}
