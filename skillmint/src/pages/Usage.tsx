@@ -1317,18 +1317,14 @@ function SedimentDialog({
     }
     setCreating(true);
     try {
-      // Use the existing command but override the auto-derived name/description by
-      // rewriting SKILL.md immediately after creation.
+      // P3 review (Q3a): the skill is created straight into the global hub with
+      // the user-edited name/description — no create-then-rewrite dance.
       const skill = await invoke<Skill>("generate_skill_from_prompt", {
         promptText: prompt.prompt_text,
+        name: name.trim(),
+        description: description.trim(),
       });
-      // Rewrite SKILL.md with the user-edited name/description.
-      await invoke("save_skill_content", {
-        skillId: skill.id,
-        frontmatter: { name: name.trim(), description: description.trim() },
-        body: `## Description\n\n${description.trim()}\n\n## Usage\n\nDerived from a repeated prompt.\n`,
-      });
-      showSuccess(`已创建 Skill「${name.trim()}」`);
+      showSuccess(`已创建 Skill「${name.trim()}」到全局 Hub`);
       onCreated(skill);
       onClose();
     } catch (err) {

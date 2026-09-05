@@ -4770,18 +4770,6 @@ fn test_preview_skill_from_prompt_rejects_invalid_prompt() {
 }
 
 #[test]
-fn test_sync_all_running_flag_rejects_concurrent_calls() {
-    let state = create_mock_state(&tempfile::tempdir().unwrap(), &Settings::default());
-    // Manually set the flag as if a sync is in progress.
-    state
-        .sync_all_running
-        .store(true, std::sync::atomic::Ordering::SeqCst);
-
-    let err = crate::commands::sync_all_command_impl(&state).unwrap_err();
-    assert!(err.contains("同步已在进行中"));
-}
-
-#[test]
 fn test_open_file_with_retry_returns_file() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("readable.jsonl");
@@ -4932,75 +4920,75 @@ mod c3_trash {
     }
 
     #[test]
-    fn restore_rebuilds_skill_and_sync_targets() {
+    fn restore_recovers_content_into_hub() {
         let (_tmp, db, settings, skill) = env_with_skill("RestoreMe");
-        // Add a sync target so we can verify it is rebuilt.
-        let agent = insert_agent(&db, "agent-a", &settings.center_repo.join("agent-a"));
-        db.insert_sync_target(&SyncTarget {
-            id: new_id(),
-            skill_id: skill.id.clone(),
-            skill_name: Some(skill.name.clone()),
-            agent_id: agent.id.clone(),
-            agent_name: Some(agent.name.clone()),
-            mode: SyncMode::Symlink,
-            last_sync_at: None,
-            status: SyncStatus::Synced,
-        })
-        .unwrap();
+        let hub_tmp = tempfile::tempdir().unwrap();
+        let hub = hub_tmp.path().join("hub");
 
         let trash_id = remove_skill_impl(&db, &settings, &skill.id).unwrap();
-        let result = restore_trash_item_impl(&db, &settings, trash_id, None).unwrap();
+        let result = restore_trash_item_impl(&db, &settings, &hub, trash_id, None).unwrap();
 
-        // Skill is back with the same id (no clash).
-        assert_eq!(result.restored_id, skill.id);
+        // Content is recovered into the hub with the same name — the legacy
+        // skills table is NOT rebuilt (P3: hub is the authoring home).
         assert_eq!(result.final_name, "RestoreMe");
-        let restored = db.get_skill_by_name("RestoreMe").unwrap().unwrap();
-        assert_eq!(restored.id, skill.id);
-
-        // sync_target rebuilt in center_changed.
-        let targets = db.get_sync_targets().unwrap();
-        let t = targets.iter().find(|t| t.skill_id == skill.id).unwrap();
-        assert_eq!(t.status, SyncStatus::CenterChanged);
+        let restored = hub.join("RestoreMe");
+        assert!(restored.join("SKILL.md").is_file(), "SKILL.md recovered into hub");
+        assert!(
+            std::fs::read_to_string(restored.join("SKILL.md"))
+                .unwrap()
+                .contains("Body content"),
+            "snapshot content preserved"
+        );
+        assert!(db.get_skill_by_name("RestoreMe").unwrap().is_none(), "no legacy row rebuild");
+        // Trash row is consumed after successful recovery.
+        assert!(db.get_trash_item(trash_id).unwrap().is_none());
     }
 
     #[test]
-    fn restore_conflict_three_strategies() {
-        // Trash "Conflicted", then create a live skill with the same name, then
-        // restore with each strategy.
+    fn restore_conflict_three_strategies_against_hub() {
         let (_tmp, db, settings, original) = env_with_skill("Conflicted");
+        let hub_tmp = tempfile::tempdir().unwrap();
+        let hub = hub_tmp.path().join("hub");
         let trash_id = remove_skill_impl(&db, &settings, &original.id).unwrap();
 
-        // Now create a new live skill with the same name.
-        let live = insert_skill(&db, &settings, "Conflicted", "# live version");
+        // A directory with the same name already lives in the hub.
+        let clash = hub.join("Conflicted");
+        std::fs::create_dir_all(&clash).unwrap();
+        std::fs::write(clash.join("SKILL.md"), "---\nname: Conflicted\ndescription: live\n---\nlive").unwrap();
 
-        // No strategy => error.
-        let err = restore_trash_item_impl(&db, &settings, trash_id, None).unwrap_err();
+        // No strategy => conflict error.
+        let err = restore_trash_item_impl(&db, &settings, &hub, trash_id, None).unwrap_err();
         assert!(err.contains("restore_conflict"));
 
-        // rename => restored as Conflicted-restored.
+        // rename => hub keeps both, restored as -restored.
         let renamed = restore_trash_item_impl(
-            &db, &settings, trash_id, Some("rename".to_string()),
+            &db, &settings, &hub, trash_id, Some("rename".to_string()),
         )
         .unwrap();
         assert_eq!(renamed.final_name, "Conflicted-restored");
-        assert!(db.get_skill_by_name("Conflicted-restored").unwrap().is_some());
-        // The live skill is untouched.
-        assert!(db.get_skills().unwrap().iter().any(|s| s.id == live.id));
+        assert!(clash.join("SKILL.md").is_file(), "original hub dir untouched");
+        assert!(hub.join("Conflicted-restored").join("SKILL.md").is_file());
 
-        // Now test overwrite: trash the live one, restore with overwrite.
-        let trash_id2 = remove_skill_impl(&db, &settings, &live.id).unwrap();
-        // Re-insert a skill named Conflicted to clash against.
-        let live2 = insert_skill(&db, &settings, "Conflicted", "# second live");
-        let overwritten = restore_trash_item_impl(
-            &db, &settings, trash_id2, Some("overwrite".to_string()),
-        )
-        .unwrap();
+        // overwrite => clashing hub dir is snapshotted into the trash (reversible),
+        // then the snapshot content takes its place.
+        let (_t2, db2, settings2, skill2) = env_with_skill("Conflicted");
+        // Give the second snapshot distinctive content.
+        std::fs::write(skill2.repo_path.join("SKILL.md"), "# second version").unwrap();
+        let trash_id2 = remove_skill_impl(&db2, &settings2, &skill2.id).unwrap();
+        let overwritten =
+            restore_trash_item_impl(&db2, &settings2, &hub, trash_id2, Some("overwrite".to_string()))
+                .unwrap();
         assert_eq!(overwritten.final_name, "Conflicted");
-        // live2 should now be in the trash (moved there by overwrite).
-        let trash_items = db.list_trash_items().unwrap();
-        assert!(trash_items.iter().any(|t| t.original_id == live2.id));
+        let body = std::fs::read_to_string(hub.join("Conflicted").join("SKILL.md")).unwrap();
+        assert!(body.contains("second version"), "snapshot content wins: {body}");
+        // The clashing dir was snapshotted into <hub>/../trash and is recoverable.
+        let items = db2.list_trash_items().unwrap();
+        assert!(
+            items.iter().any(|t| t.original_id == format!("hub-{}", original.name)),
+            "clash snapshot registered: {:?}",
+            items.iter().map(|t| &t.original_id).collect::<Vec<_>>()
+        );
     }
-
     #[test]
     fn purge_requires_confirm_code_and_deletes() {
         let (_tmp, db, settings, skill) = env_with_skill("PurgeMe");

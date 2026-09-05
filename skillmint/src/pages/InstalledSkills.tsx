@@ -16,15 +16,16 @@ import { Button } from "../components/ui/Button";
 import { Badge } from "../components/ui/Badge";
 import { SkeletonList } from "../components/ui/Skeleton";
 import { showError, showSuccess } from "../stores/toastStore";
+import { useAppStore } from "../stores/appStore";
 import { cn } from "../components/ui/utils";
 import {
   getAgentsTable,
+  getNpxEnv,
   getProjects,
   hubInstallSource,
   getSkillIndex,
   hubCollectSkill,
   hubCreateSkill,
-  hubListSkills,
   hubPush,
   hubSetRemote,
   hubStatus,
@@ -37,6 +38,7 @@ import {
   skillsSearch,
   rebuildSkillIndex,
   type AgentDef,
+  type NodeEnvInfo,
   type HubStatus,
   type InstallRequest,
   type ProjectRow,
@@ -59,6 +61,8 @@ const MANAGED_LABEL: Record<string, string> = {
 };
 
 export default function InstalledSkills() {
+  const selectedSkillName = useAppStore((state) => state.selectedSkillName);
+  const setSelectedSkillName = useAppStore((state) => state.setSelectedSkillName);
   const [rows, setRows] = useState<SkillIndexEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<ScopeFilter>("all");
@@ -82,11 +86,9 @@ export default function InstalledSkills() {
       setLoading(true);
       try {
         await rebuildSkillIndex(root);
-        const [installed, globalHubRows] = await Promise.all([
-          getSkillIndex(root),
-          hubListSkills("global", null).catch(() => []),
-        ]);
-        setRows([...installed, ...globalHubRows]);
+        // P3 review fix (B1): the index already includes hub-global/hub-project
+        // rows — never merge a second live hub scan on top of it.
+        setRows(await getSkillIndex(root));
       } catch (err) {
         showError(err, { context: "刷新技能索引" });
       } finally {
@@ -119,6 +121,14 @@ export default function InstalledSkills() {
     void refresh(projectRoot);
     void refreshHub();
   }, [refresh, refreshHub, projectRoot]);
+
+  // P3 review (Q5): skillmint://open/skill/<name> lands here as a search filter.
+  useEffect(() => {
+    if (selectedSkillName) {
+      setQuery(selectedSkillName);
+      setSelectedSkillName(null);
+    }
+  }, [selectedSkillName, setSelectedSkillName]);
 
   // Auto-detect external `npx skills` activity: rescan when the window regains
   // focus if the on-disk fingerprint changed (P3 design: 轻量轮询 + 事件刷新).
@@ -471,6 +481,10 @@ function InstallFromHubButton({ row, projectRoot }: { row: SkillIndexEntry; proj
       variant="secondary"
       disabled={busy}
       onClick={async () => {
+        if (!projectRoot) {
+          showError("请先在页面顶部选择项目上下文，再安装到项目");
+          return;
+        }
         setBusy(true);
         try {
           const source = await hubInstallSource(row.scope === "hub-project" ? "project" : "global", projectRoot);
@@ -559,6 +573,14 @@ export function InstallModal({
   const [running, setRunning] = useState(false);
   const [log, setLog] = useState<string[]>([]);
   const [searchHits, setSearchHits] = useState<{ name: string; source: string }[] | null>(null);
+  // P3 review (Q4): surface the node runtime problem before the user fills the form.
+  const [nodeEnv, setNodeEnv] = useState<NodeEnvInfo | null>(null);
+
+  useEffect(() => {
+    getNpxEnv()
+      .then(setNodeEnv)
+      .catch(() => setNodeEnv(null));
+  }, []);
 
   const agentOptions = useMemo(
     () => (global ? agents.filter((a) => a.global_dir) : agents),
@@ -639,7 +661,11 @@ export function InstallModal({
     }
   };
 
-  const canRun = !running && req.source.length > 0 && req.skills.length > 0;
+  // P3 review fix (B2): a project-scope install without a project would run
+  // the CLI in $HOME — block it at the button instead.
+  const projectMissing = !global && !useProject;
+  const nodeBroken = !!nodeEnv?.problem;
+  const canRun = !running && !nodeBroken && req.source.length > 0 && req.skills.length > 0 && !projectMissing;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-8" onClick={running ? undefined : onClose}>
@@ -702,7 +728,10 @@ export function InstallModal({
               aria-label="目标项目"
               value={useProject}
               onChange={(e) => setUseProject(e.target.value)}
-              className="rounded border border-[var(--border-subtle)] bg-transparent px-2 py-1 text-xs text-primary"
+              className={cn(
+                "rounded border bg-transparent px-2 py-1 text-xs text-primary",
+                projectMissing ? "border-warning" : "border-[var(--border-subtle)]",
+              )}
             >
               <option value="">选择项目…</option>
               {projects.map((p) => (
@@ -754,6 +783,15 @@ export function InstallModal({
             ))}
           </div>
         </div>
+
+        {nodeBroken && (
+          <div className="rounded border border-warning/30 bg-warning/10 p-2 text-xs text-warning">
+            Node 运行时不可用：{nodeEnv?.problem}
+          </div>
+        )}
+        {projectMissing && (
+          <p className="text-xs text-warning">项目级安装必须选择目标项目（skills-lock.json 会写进项目根目录）。</p>
+        )}
 
         {preview && (
           <div className="rounded border border-[var(--border-subtle)] bg-[var(--bg-subtle)] p-2">

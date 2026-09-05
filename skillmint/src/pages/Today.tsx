@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "../lib/invoke";
+import { getSkillIndex, rebuildSkillIndex, type SkillIndexEntry } from "../lib/npxskills";
 import {
   ArrowRight,
   Bot,
@@ -26,8 +27,6 @@ import type {
   GrowthMetrics,
   SkillUsageSummary,
   SummaryOutcome,
-  SyncAllResult,
-  SyncTarget,
   WindowMetrics,
 } from "../types";
 
@@ -94,7 +93,6 @@ interface DailySummaryMeta {
 
 export default function Today() {
   const agents = useAppStore((state) => state.agents);
-  const syncTargets = useAppStore((state) => state.syncTargets);
   const settings = useAppStore((state) => state.settings);
   const setActiveTab = useAppStore((state) => state.setActiveTab);
   const navigateToSettings = useAppStore((state) => state.navigateToSettings);
@@ -121,7 +119,34 @@ export default function Today() {
   const [dailyMetas, setDailyMetas] = useState<DailySummaryMeta[]>([]);
   const [weeklySpark, setWeeklySpark] = useState<{ date: string; sessions: number }[]>([]);
   const [scanning, setScanning] = useState(false);
-  const [syncPanelOpen, setSyncPanelOpen] = useState(false);
+  // P3 review: the sync-health panel is retired with the sync engine; Today
+  // shows a live skill-index chip instead.
+  const [indexRows, setIndexRows] = useState<SkillIndexEntry[]>([]);
+  const [refreshingIndex, setRefreshingIndex] = useState(false);
+
+  const loadIndex = useCallback(async () => {
+    try {
+      setIndexRows((await getSkillIndex(null)) ?? []);
+    } catch {
+      /* non-fatal */
+    }
+  }, []);
+
+  const refreshIndex = useCallback(async () => {
+    setRefreshingIndex(true);
+    try {
+      await rebuildSkillIndex(null);
+      await loadIndex();
+    } catch (err) {
+      showError(err, { context: "刷新技能索引" });
+    } finally {
+      setRefreshingIndex(false);
+    }
+  }, [loadIndex]);
+
+  useEffect(() => {
+    void loadIndex();
+  }, [loadIndex]);
 
   const yesterday = yesterdayIso();
 
@@ -479,35 +504,8 @@ export default function Today() {
         </Card>
       </section>
 
-      {/* 4. Health bar */}
-      <HealthBar
-        syncTargets={syncTargets}
-        sources={collectionSources}
-        onOpenSyncPanel={() => setSyncPanelOpen(true)}
-      />
-      {syncPanelOpen && (
-        <SyncStatusPanel
-          syncTargets={syncTargets}
-          agents={agents}
-          onClose={() => setSyncPanelOpen(false)}
-          onSync={async () => {
-            try {
-              const result = await invoke<SyncAllResult>("sync_all_command");
-              if (result.failure_count > 0) {
-                showError(
-                  `同步完成：${result.success_count} 成功，${result.failure_count} 失败`,
-                  5000
-                );
-              } else {
-                showSuccess(`同步完成：${result.success_count} 个目标成功`);
-              }
-              await loadData();
-            } catch (err) {
-              showError(err, { context: "同步" });
-            }
-          }}
-        />
-      )}
+      {/* 4. Health bar (P3 review: sync health → live skill-index health) */}
+      <HealthBar indexRows={indexRows} sources={collectionSources} onRefreshIndex={refreshIndex} refreshing={refreshingIndex} />
     </div>
   );
 }
@@ -974,17 +972,19 @@ function Sparkline({
 }
 
 function HealthBar({
-  syncTargets,
+  indexRows,
   sources,
-  onOpenSyncPanel,
+  onRefreshIndex,
+  refreshing,
 }: {
-  syncTargets: SyncTarget[];
+  indexRows: SkillIndexEntry[];
   sources: CollectedSource[];
-  onOpenSyncPanel: () => void;
+  onRefreshIndex: () => void;
+  refreshing: boolean;
 }) {
-  const total = syncTargets.length;
-  const synced = syncTargets.filter((t) => t.status === "synced").length;
-  const conflict = syncTargets.filter((t) => t.status === "conflict").length;
+  const total = indexRows.filter((r) => r.scope === "global" || r.scope === "project").length;
+  const modified = indexRows.filter((r) => r.status === "modified").length;
+  const broken = indexRows.filter((r) => r.status === "broken").length;
 
   const lastCollectedAt = useMemo(() => {
     const timestamps = sources
@@ -996,20 +996,27 @@ function HealthBar({
   return (
     <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-2 text-2xs text-tertiary font-mono">
       <button
-        onClick={onOpenSyncPanel}
-        className="inline-flex items-center gap-1.5 hover:text-primary"
+        onClick={onRefreshIndex}
+        disabled={refreshing}
+        className="inline-flex items-center gap-1.5 hover:text-primary disabled:opacity-50"
       >
-        {conflict > 0 ? (
+        {broken > 0 ? (
           <>
             <span className="h-1.5 w-1.5 rounded-full bg-danger" />
-            同步 <span className="text-danger">{synced}/{total}</span>
+            技能索引 <span className="text-danger">{total} · 失效 {broken}</span>
+          </>
+        ) : modified > 0 ? (
+          <>
+            <span className="h-1.5 w-1.5 rounded-full bg-warning" />
+            技能索引 <span className="text-warning">{total} · 修改 {modified}</span>
           </>
         ) : (
           <>
             <span className="h-1.5 w-1.5 rounded-full bg-success" />
-            同步健康 <span className="text-success">{synced}/{total}</span>
+            技能索引 <span className="text-success">{total}</span>
           </>
         )}
+        <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} />
       </button>
 
       {lastCollectedAt ? (
@@ -1032,105 +1039,3 @@ function HealthBar({
   );
 }
 
-function SyncStatusPanel({
-  syncTargets,
-  agents,
-  onClose,
-  onSync,
-}: {
-  syncTargets: SyncTarget[];
-  agents: Agent[];
-  onClose: () => void;
-  onSync: () => Promise<void>;
-}) {
-  const [syncing, setSyncing] = useState(false);
-  const agentMap = useMemo(() => {
-    const map = new Map<string, Agent>();
-    agents.forEach((a) => map.set(a.id, a));
-    return map;
-  }, [agents]);
-
-  const doSync = async () => {
-    setSyncing(true);
-    try {
-      await onSync();
-    } finally {
-      setSyncing(false);
-    }
-  };
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="max-h-[80vh] w-full max-w-md overflow-auto rounded-xl bg-primary p-6 shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-lg font-semibold text-primary">同步状态明细</h3>
-          <button onClick={onClose} className="text-secondary hover:text-primary">
-            ✕
-          </button>
-        </div>
-
-        {syncTargets.length === 0 ? (
-          <p className="py-4 text-center text-sm text-secondary">暂无同步目标</p>
-        ) : (
-          <div className="mb-4 space-y-2">
-            {syncTargets.map((t) => (
-              <div
-                key={t.id}
-                className="flex items-center justify-between rounded-lg border border-[var(--border-subtle)] bg-secondary px-4 py-3"
-              >
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-medium text-primary">
-                    {t.skill_name ?? t.skill_id}
-                  </div>
-                  <div className="text-xs text-secondary">
-                    {agentMap.get(t.agent_id)?.name ?? t.agent_id} · {t.mode}
-                  </div>
-                </div>
-                <div className="shrink-0 text-right text-xs">
-                  <div
-                    className={
-                      t.status === "synced"
-                        ? "text-success"
-                        : t.status === "conflict"
-                          ? "text-danger"
-                          : "text-warning"
-                    }
-                  >
-                    {t.status === "synced"
-                      ? "已同步"
-                      : t.status === "conflict"
-                        ? "冲突"
-                        : t.status === "local_changed"
-                          ? "本地有变更"
-                          : t.status === "center_changed"
-                            ? "中心有变更"
-                            : t.status}
-                  </div>
-                  {t.last_sync_at && (
-                    <div className="text-tertiary">{formatTimeAgo(t.last_sync_at)}</div>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div className="flex justify-end gap-2">
-          <Button variant="secondary" size="sm" onClick={onClose}>
-            关闭
-          </Button>
-          <Button variant="primary" size="sm" onClick={doSync} loading={syncing} disabled={syncing}>
-            <RefreshCw className="mr-1 h-4 w-4" />
-            立即同步
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}

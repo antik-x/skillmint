@@ -82,9 +82,7 @@ function routeInvoke(cmd: string) {
     case "rebuild_skill_index":
       return { total: rows.length, npx_global: 1, unmanaged: 1, hub: 1, modified: 0, broken: 0 };
     case "get_skill_index":
-      return rows.filter((r) => r.scope !== "hub-global");
-    case "hub_list_skills":
-      return rows.filter((r) => r.scope === "hub-global");
+      return rows;
     case "get_agents_table":
       return agentTable;
     case "get_projects":

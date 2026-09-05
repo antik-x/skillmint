@@ -6,7 +6,7 @@ use chrono::Datelike;
 use crate::db::Db;
 use crate::models::{
     Discovery, DiscoveryDecisionResult, DiscoveryKind, DiscoveryRunResult, DiscoveryStatus,
-    SyncFailure, SyncSummary, WeeklyReport,
+    SyncSummary, WeeklyReport,
 };
 use crate::settings::AiConfig;
 
@@ -213,7 +213,7 @@ pub fn run_pipeline(
 pub fn decide_discovery(
     db: &Db,
     device_id: &str,
-    center_repo: &std::path::Path,
+    hub: &std::path::Path,
     id: &str,
     action: &str,
     reason: Option<&str>,
@@ -223,22 +223,23 @@ pub fn decide_discovery(
         .ok_or_else(|| anyhow::anyhow!("Discovery not found"))?;
 
     match action {
-        "accept" => decide_accept(db, device_id, center_repo, discovery, /*sync=*/ true),
-        "accept_edited" => decide_accept(db, device_id, center_repo, discovery, /*sync=*/ false),
+        "accept" => decide_accept(db, device_id, hub, discovery, /*sync=*/ true),
+        "accept_edited" => decide_accept(db, device_id, hub, discovery, /*sync=*/ false),
         "dismiss" => decide_dismiss(db, discovery, reason),
         other => anyhow::bail!("unknown action: {}", other),
     }
 }
 
-/// Shared body for accept / accept_edited. When `sync` is true the created
-/// skill is pushed to every enabled agent via [`sync_single_skill`] and the
-/// failures are surfaced in `sync_summary`.
+/// Shared body for accept / accept_edited. P3 review (Q3a): the draft is
+/// authored into the global private hub (git auto-commit) instead of the
+/// retired center repo; `sync_summary` stays `None` because distribution is
+/// now an explicit `npx skills add`, never an automatic push.
 fn decide_accept(
     db: &Db,
     device_id: &str,
-    center_repo: &std::path::Path,
+    hub: &std::path::Path,
     mut discovery: Discovery,
-    sync: bool,
+    _sync: bool,
 ) -> anyhow::Result<DiscoveryDecisionResult> {
     let draft_name = discovery
         .payload
@@ -250,34 +251,21 @@ fn decide_accept(
     let now = crate::db::now_secs();
 
     let skill_id = match draft_name {
-        Some(name) => create_skill_draft(db, device_id, center_repo, &name, &discovery)?,
+        Some(ref name) => create_skill_draft(db, device_id, hub, name, &discovery)?,
         None => None,
     };
 
-    // Sync only when the caller asked for the direct path AND we actually
-    // created a skill. accept_edited stops here so the user can edit first.
-    let mut sync_summary: Option<SyncSummary> = None;
-    if let Some(ref sid) = skill_id {
-        if sync {
-            let report = sync_single_skill(db, sid)?;
-            sync_summary = Some(SyncSummary {
-                success: report.updated.len(),
-                failed: report.broken.len(),
-                failures: report.broken,
-            });
-        }
-    }
+    let sync_summary: Option<SyncSummary> = None;
 
-    // Persist the decision. Skill creation has succeeded; even if sync had
-    // failures we mark the discovery accepted (PRD-12 A-R1: never roll back a
-    // created skill because of a sync failure).
+    // Persist the decision. Skill creation has succeeded (PRD-12 A-R1: never
+    // roll back a created skill).
     db.update_discovery_status(
         &discovery.id,
         DiscoveryStatus::Accepted,
         Some(now),
         skill_id.as_deref(),
     )?;
-    let decision = if sync { "adopted_as_is" } else { "adopted_edited" };
+    let decision = if _sync { "adopted_as_is" } else { "adopted_edited" };
     db.insert_adoption_event(
         &discovery.id,
         decision,
@@ -297,6 +285,53 @@ fn decide_accept(
     })
 }
 
+fn create_skill_draft(
+    db: &Db,
+    _device_id: &str,
+    hub: &std::path::Path,
+    name: &str,
+    discovery: &Discovery,
+) -> anyhow::Result<Option<String>> {
+    crate::hub::validate_skill_name(name)?;
+
+    let draft_body = discovery
+        .payload
+        .get("draft_skill")
+        .and_then(|v| v.get("body"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let description = format!("从发现「{}」自动生成的 Skill 草稿。", discovery.title);
+    let dir = crate::hub::create_skill(hub, "global", name, &description)?;
+
+    let body = if draft_body.is_empty() {
+        format!(
+            "# {}\n\n## Description\n\n{}\n\n## Usage\n\n请补充使用方式。\n",
+            name, description
+        )
+    } else {
+        draft_body.to_string()
+    };
+    // Overwrite the template body but keep the frontmatter hub::create_skill wrote.
+    let skill_md = dir.join("SKILL.md");
+    let existing = std::fs::read_to_string(&skill_md).unwrap_or_default();
+    let merged = if existing.starts_with("---") {
+        if let Some(idx) = existing[3..].find("\n---") {
+            let frontmatter = &existing[..3 + idx + 4];
+            format!("{}\n{}", frontmatter, body)
+        } else {
+            body
+        }
+    } else {
+        body
+    };
+    std::fs::write(&skill_md, merged)?;
+
+    // The hub skill's stable identifier is its name (adoption ledger uses it).
+    let _ = db;
+    Ok(Some(name.to_string()))
+}
+
 fn decide_dismiss(
     db: &Db,
     mut discovery: Discovery,
@@ -311,8 +346,6 @@ fn decide_dismiss(
             other
         ),
         None => {
-            // DEPRECATION: callers should always pass an explicit reason. The
-            // default keeps old frontends working until SPEC-C2 lands.
             "trivial".to_string()
         }
     };
@@ -328,148 +361,6 @@ fn decide_dismiss(
         created_skill_id: None,
         sync_summary: None,
     })
-}
-
-fn create_skill_draft(
-    db: &Db,
-    device_id: &str,
-    center_repo: &std::path::Path,
-    name: &str,
-    discovery: &Discovery,
-) -> anyhow::Result<Option<String>> {
-    let skill_dir = center_repo.join(name);
-    if skill_dir.exists() {
-        anyhow::bail!("Skill '{}' already exists", name);
-    }
-    std::fs::create_dir_all(&skill_dir)?;
-
-    let draft_body = discovery
-        .payload
-        .get("draft_skill")
-        .and_then(|v| v.get("body"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    let body = if draft_body.is_empty() {
-        format!("# {}\n\n## Description\n\n从发现「{}」自动生成的 Skill 草稿。\n\n## Usage\n\n请补充使用方式。\n", name, discovery.title)
-    } else {
-        draft_body.to_string()
-    };
-    std::fs::write(skill_dir.join("SKILL.md"), body)?;
-
-    let now = crate::db::now_secs();
-    let skill = crate::models::Skill {
-        id: crate::db::new_id(),
-        name: name.to_string(),
-        repo_path: skill_dir,
-        created_at: now,
-        updated_at: now,
-        status: crate::models::SkillStatus::Draft,
-    };
-    db.insert_skill(&skill)?;
-
-    // Best-effort KG extraction.
-    crate::kg::analyze_skill(db, device_id, &skill.id, &skill.repo_path.join("SKILL.md")).ok();
-
-    Ok(Some(skill.id))
-}
-
-/// SPEC-C1 T2: sync a single skill to every enabled agent.
-///
-/// This is the adopt-and-sync direct path: when a discovery is accepted
-/// (`action="accept"`) the freshly created skill is pushed to every agent
-/// immediately so the user never has to open the sync panel. The same
-/// per-target evaluate/apply logic as [`crate::sync::sync_all`] is reused,
-/// scoped to one skill, and a fresh sync_target is created for each enabled
-/// agent that does not yet have one (mirroring `ensure_sync_targets`).
-///
-/// Partial failures are reported, not fatal: the caller keeps the skill and
-/// surfaces the failures in `sync_summary` (PRD-12 red line A-R1).
-pub fn sync_single_skill(db: &Db, skill_id: &str) -> anyhow::Result<crate::sync::SyncReport> {
-    use crate::models::{Agent, SyncMode, SyncStatus, SyncTarget};
-    use crate::sync::{apply_sync_target_and_record, evaluate_sync_target, sync_failure_from_error};
-
-    let skill = db
-        .get_skills()?
-        .into_iter()
-        .find(|s| s.id == skill_id)
-        .ok_or_else(|| anyhow::anyhow!("skill not found: {}", skill_id))?;
-
-    let agents: std::collections::HashMap<String, Agent> = db
-        .get_agents()?
-        .into_iter()
-        .filter(|a| a.is_enabled)
-        .map(|a| (a.id.clone(), a))
-        .collect();
-
-    let existing: Vec<SyncTarget> = db
-        .get_sync_targets()?
-        .into_iter()
-        .filter(|t| t.skill_id == skill_id)
-        .collect();
-
-    let now = crate::db::now_secs();
-
-    let mut updated = Vec::new();
-    let mut broken: Vec<SyncFailure> = Vec::new();
-
-    for agent in agents.values() {
-        // Ensure a target exists for this (skill, agent) pair.
-        let target = match existing.iter().find(|t| t.agent_id == agent.id) {
-            Some(t) => t.clone(),
-            None => {
-                let id = crate::db::new_id();
-                let new_target = SyncTarget {
-                    id: id.clone(),
-                    skill_id: skill.id.clone(),
-                    skill_name: Some(skill.name.clone()),
-                    agent_id: agent.id.clone(),
-                    agent_name: Some(agent.name.clone()),
-                    mode: SyncMode::Symlink,
-                    last_sync_at: None,
-                    status: SyncStatus::CenterChanged,
-                };
-                if let Err(e) = db.insert_sync_target(&new_target) {
-                    broken.push(SyncFailure {
-                        target_id: id,
-                        skill_id: skill.id.clone(),
-                        skill_name: Some(skill.name.clone()),
-                        agent_id: agent.id.clone(),
-                        agent_name: Some(agent.name.clone()),
-                        error: format!("无法创建同步目标：{}", e),
-                        recovery_hint: None,
-                    });
-                    continue;
-                }
-                new_target
-            }
-        };
-
-        let status = match evaluate_sync_target(&target, &skill, agent) {
-            Ok(s) => s,
-            Err(e) => {
-                broken.push(sync_failure_from_error(&target, e));
-                continue;
-            }
-        };
-
-        // A freshly created skill is always CenterChanged relative to the
-        // agent dir (which doesn't have it yet); apply unconditionally so the
-        // file lands even when evaluate returned something unexpected.
-        match apply_sync_target_and_record(db, &target, &skill, agent) {
-            Ok(new_status) => updated.push(SyncTarget {
-                status: new_status,
-                last_sync_at: Some(now),
-                ..target
-            }),
-            Err(e) => {
-                broken.push(sync_failure_from_error(&target, e));
-            }
-        }
-        let _ = status; // status evaluated but apply drives the final state
-    }
-
-    Ok(crate::sync::SyncReport { updated, broken })
 }
 
 /// Generate (or regenerate) the weekly report for `week_start` (YYYY-MM-DD Monday).

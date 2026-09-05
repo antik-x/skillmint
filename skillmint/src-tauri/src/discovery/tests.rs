@@ -393,19 +393,20 @@ fn insert_pending_discovery(db: &Db, id: &str, dedup_key: &str, draft_name: Opti
 }
 
 #[test]
-fn c1_accept_records_adopted_as_is_and_syncs() {
+fn c1_accept_authors_into_hub_and_ledgers() {
     let (tmp, db) = test_db();
-    let repo = tmp.path().join("repo");
-    std::fs::create_dir_all(&repo).unwrap();
-    // No enabled agents => sync_summary is 0/0 (no failure, no success).
-    let d = insert_pending_discovery(&db, "c1-accept", "dk:accept", Some("AcceptedSkill"));
+    let hub = tmp.path().join("hub");
+    std::fs::create_dir_all(&hub).unwrap();
+    // P3 review (Q3a): accept authors the draft into the global hub — kebab-case
+    // names, no auto-sync (distribution is an explicit `npx skills add`).
+    let d = insert_pending_discovery(&db, "c1-accept", "dk:accept", Some("accepted-skill"));
 
-    let result = decide_discovery(&db, DEVICE, &repo, &d.id, "accept", None).unwrap();
+    let result = decide_discovery(&db, DEVICE, &hub, &d.id, "accept", None).unwrap();
     assert_eq!(result.discovery.status, DiscoveryStatus::Accepted);
-    assert!(result.created_skill_id.is_some());
-    let summary = result.sync_summary.expect("accept must return a sync_summary");
-    assert_eq!(summary.success, 0);
-    assert_eq!(summary.failed, 0);
+    assert_eq!(result.created_skill_id.as_deref(), Some("accepted-skill"));
+    assert!(result.sync_summary.is_none(), "accept no longer auto-syncs");
+    assert!(hub.join("accepted-skill").join("SKILL.md").is_file());
+    assert!(hub.join(".git").exists(), "hub auto git-inits with adoption");
 
     // adoption_events ledger row.
     let (decision, reason) = db.latest_adoption_event(&d.id).unwrap().unwrap();
@@ -416,13 +417,14 @@ fn c1_accept_records_adopted_as_is_and_syncs() {
 #[test]
 fn c1_accept_edited_records_adopted_edited_no_sync() {
     let (tmp, db) = test_db();
-    let repo = tmp.path().join("repo");
-    std::fs::create_dir_all(&repo).unwrap();
-    let d = insert_pending_discovery(&db, "c1-edit", "dk:edit", Some("EditedSkill"));
+    let hub = tmp.path().join("hub");
+    std::fs::create_dir_all(&hub).unwrap();
+    let d = insert_pending_discovery(&db, "c1-edit", "dk:edit", Some("edited-skill"));
 
-    let result = decide_discovery(&db, DEVICE, &repo, &d.id, "accept_edited", None).unwrap();
-    assert!(result.created_skill_id.is_some());
+    let result = decide_discovery(&db, DEVICE, &hub, &d.id, "accept_edited", None).unwrap();
+    assert_eq!(result.created_skill_id.as_deref(), Some("edited-skill"));
     assert!(result.sync_summary.is_none(), "accept_edited must not sync");
+    assert!(hub.join("edited-skill").join("SKILL.md").is_file());
 
     let (decision, _) = db.latest_adoption_event(&d.id).unwrap().unwrap();
     assert_eq!(decision, "adopted_edited");
@@ -582,67 +584,43 @@ fn insert_agent_at(db: &Db, name: &str, skill_dir: PathBuf) -> Agent {
 }
 
 #[test]
-fn c2_accept_syncs_to_all_enabled_agents_success() {
-    // Two enabled agents with writable directories: accept should sync to both.
+fn c2_accept_writes_only_the_hub_never_agent_dirs() {
+    // P3 review (Q3a): adoption is hub-only. Enabled agents with writable
+    // directories must NOT be touched — distribution is explicit npx skills add.
     let (tmp, db) = test_db();
-    let repo = tmp.path().join("repo");
-    std::fs::create_dir_all(&repo).unwrap();
-    let _a1 = insert_agent_at(&db, "agent-ok-1", tmp.path().join("a1").join("skills"));
-    let _a2 = insert_agent_at(&db, "agent-ok-2", tmp.path().join("a2").join("skills"));
+    let hub = tmp.path().join("hub");
+    std::fs::create_dir_all(&hub).unwrap();
+    let a1 = tmp.path().join("a1").join("skills");
+    let a2 = tmp.path().join("a2").join("skills");
+    std::fs::create_dir_all(&a1).unwrap();
+    std::fs::create_dir_all(&a2).unwrap();
+    let _a1g = insert_agent_at(&db, "agent-ok-1", a1.clone());
+    let _a2g = insert_agent_at(&db, "agent-ok-2", a2.clone());
 
-    let d = insert_pending_discovery(&db, "c2-ok", "dk:ok", Some("SyncableSkill"));
-    let result = decide_discovery(&db, DEVICE, &repo, &d.id, "accept", None).unwrap();
-    let summary = result.sync_summary.expect("accept returns sync_summary");
-    assert_eq!(summary.success, 2, "both agents should succeed");
-    assert_eq!(summary.failed, 0);
-    // Files actually landed.
-    assert!(tmp.path().join("a1").join("skills").join("SyncableSkill").join("SKILL.md").exists());
-    assert!(tmp.path().join("a2").join("skills").join("SyncableSkill").join("SKILL.md").exists());
+    let d = insert_pending_discovery(&db, "c2-ok", "dk:ok", Some("syncable-skill"));
+    let result = decide_discovery(&db, DEVICE, &hub, &d.id, "accept", None).unwrap();
+    assert_eq!(result.created_skill_id.as_deref(), Some("syncable-skill"));
+    assert!(result.sync_summary.is_none());
+    // Hub got the content; agent dirs stayed untouched.
+    assert!(hub.join("syncable-skill").join("SKILL.md").is_file());
+    assert!(!a1.join("syncable-skill").exists(), "agent dir untouched");
+    assert!(!a2.join("syncable-skill").exists(), "agent dir untouched");
 }
 
 #[test]
-fn c2_accept_partial_failure_keeps_skill_and_reports_failed() {
-    // One writable agent + one whose directory is read-only (chmod 555 on the
-    // parent so the symlink/copy cannot land). The skill must still be created
-    // and the discovery accepted; sync_summary.failed must be >= 1.
+fn c2_accept_duplicate_hub_name_errors_and_stays_pending() {
+    // A skill with the draft name already lives in the hub: accept must fail
+    // loudly and leave the discovery pending (no silent overwrite).
     let (tmp, db) = test_db();
-    let repo = tmp.path().join("repo");
-    std::fs::create_dir_all(&repo).unwrap();
-    let _a1 = insert_agent_at(&db, "agent-ok", tmp.path().join("ok").join("skills"));
+    let hub = tmp.path().join("hub");
+    std::fs::create_dir_all(hub.join("dup-skill")).unwrap();
+    std::fs::write(hub.join("dup-skill").join("SKILL.md"), "---\nname: dup-skill\n---\n").unwrap();
 
-    // Create a read-only agent directory: the skill subdir can't be written.
-    let ro_root = tmp.path().join("ro");
-    let ro_skills = ro_root.join("skills");
-    std::fs::create_dir_all(&ro_skills).unwrap();
-    let _a2 = insert_agent_at(&db, "agent-ro", ro_skills.clone());
-    // Lock the skills dir to read+execute only (no write). On macOS this blocks
-    // both symlink and copy creation inside it.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&ro_skills, std::fs::Permissions::from_mode(0o555)).unwrap();
-    }
-
-    let d = insert_pending_discovery(&db, "c2-pf", "dk:pf", Some("PartialFailSkill"));
-    let result = decide_discovery(&db, DEVICE, &repo, &d.id, "accept", None).unwrap();
-
-    // PRD-12 A-R1: skill was created regardless of sync outcome.
-    assert!(result.created_skill_id.is_some());
-    assert_eq!(result.discovery.status, DiscoveryStatus::Accepted);
-
-    let summary = result.sync_summary.expect("accept returns sync_summary");
-    assert!(summary.failed >= 1, "expected at least one sync failure, got {summary:?}");
-    // At least one agent succeeded.
-    assert!(summary.success >= 1, "expected the writable agent to succeed");
-    // Failure carries a recovery hint.
-    assert!(summary.failures.iter().any(|f| f.agent_id == _a2.id), "failure must name the RO agent");
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // Restore permissions so the temp dir cleanup works.
-        let _ = std::fs::set_permissions(&ro_skills, std::fs::Permissions::from_mode(0o755));
-    }
+    let d = insert_pending_discovery(&db, "c2-dup", "dk:dup", Some("dup-skill"));
+    let err = decide_discovery(&db, DEVICE, &hub, &d.id, "accept", None).unwrap_err();
+    assert!(err.to_string().contains("已存在同名"), "{err}");
+    let after = db.get_discovery_by_id(&d.id).unwrap().unwrap();
+    assert_eq!(after.status, DiscoveryStatus::Pending);
 }
 
 // =============================================================================

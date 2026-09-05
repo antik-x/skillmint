@@ -66,11 +66,11 @@ export default function TrashPanel() {
         });
         if (result.skipped_bindings.length > 0) {
           showSuccess(
-            `已恢复「${result.final_name}」（${result.skipped_bindings.length} 个失效项目绑定已跳过）`,
+            `已找回「${result.final_name}」到全局 Hub（~/.skillmint/hub）。回到 agent 目录请用 npx skills add 重新安装`,
             6000,
           );
         } else {
-          showSuccess(`已恢复「${result.final_name}」，同步状态为待同步，可在详情页同步到 Agent`);
+          showSuccess(`已找回「${result.final_name}」到全局 Hub（~/.skillmint/hub）。回到 agent 目录请用 npx skills add 重新安装`);
         }
         setConflict(null);
         await load();
@@ -198,8 +198,8 @@ export default function TrashPanel() {
             ：现有版本也会被移入回收站（双向可逆）。
           </p>
           <p>
-            <strong className="text-primary">重命名恢复</strong>
-            ：恢复为「{conflict?.conflictName ?? ""}-restored」。
+            <strong className="text-primary">重命名找回</strong>
+            ：Hub 中保留为「{conflict?.conflictName ?? ""}-restored」。
           </p>
         </div>
         <DialogActions>

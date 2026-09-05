@@ -159,8 +159,10 @@ describe("SPEC-C2: three-choice inbox", () => {
     });
   });
 
-  // T2: partial_synced banner
-  it("T2: accept with sync_summary.failed > 0 shows partial banner and keeps card", async () => {
+  // T2 (P3 review): the partial-sync banner was retired with the sync engine —
+  // acceptance now lands in the global hub and never auto-syncs, so a
+  // sync_summary.failed > 0 response is treated as a plain success.
+  it("T2: accept with failed sync_summary still completes (no banner, hub flow)", async () => {
     vi.mocked(invoke).mockImplementation(((cmd: string, args?: InvokeArgs) => {
       if (cmd === "list_discoveries") return Promise.resolve([makeDiscovery({ id: "1" })]);
       if (cmd === "decide_discovery" && (args as { action: string }).action === "accept") {
@@ -182,57 +184,11 @@ describe("SPEC-C2: three-choice inbox", () => {
     render(<Inbox />);
     await screen.findByText("三选测试发现");
     await userEvent.click(screen.getByRole("button", { name: /采纳并同步/ }));
-    const banner = await screen.findByTestId("partial-sync-banner");
-    expect(banner).toBeInTheDocument();
-    expect(banner.textContent).toContain("1 个 Agent 同步失败");
-    expect(banner.textContent).toContain("请检查 Agent 目录的写权限");
-    // Card still visible.
-    expect(screen.getByText("三选测试发现")).toBeInTheDocument();
-  });
-
-  it("T2: retry sync calls sync_single_skill_command", async () => {
-    vi.mocked(invoke).mockImplementation(((cmd: string, args?: InvokeArgs) => {
-      if (cmd === "list_discoveries") return Promise.resolve([makeDiscovery({ id: "1" })]);
-      if (cmd === "decide_discovery" && (args as { action: string }).action === "accept") {
-        return Promise.resolve({
-          created_skill_id: "skill-rt",
-          sync_summary: { success: 0, failed: 1, failures: [{ target_id: "t1", skill_id: "skill-rt", agent_id: "a1", error: "denied" }] },
-        });
-      }
-      if (cmd === "sync_single_skill_command") {
-        return Promise.resolve({ success_count: 1, failure_count: 0, failures: [], targets: [], imported_skills: 0, import_conflicts: 0 });
-      }
-      return Promise.resolve(undefined);
-    }) as typeof invoke);
-    render(<Inbox />);
-    await screen.findByText("三选测试发现");
-    await userEvent.click(screen.getByRole("button", { name: /采纳并同步/ }));
-    await screen.findByTestId("partial-sync-banner");
-    await userEvent.click(screen.getByRole("button", { name: /重试同步/ }));
-    await waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith("sync_single_skill_command", { skillId: "skill-rt" });
-    });
-  });
-
-  it("T2: ignore removes the card leaving the skill created", async () => {
-    vi.mocked(invoke).mockImplementation(((cmd: string, args?: InvokeArgs) => {
-      if (cmd === "list_discoveries") return Promise.resolve([makeDiscovery({ id: "1" })]);
-      if (cmd === "decide_discovery" && (args as { action: string }).action === "accept") {
-        return Promise.resolve({
-          created_skill_id: "skill-ig",
-          sync_summary: { success: 0, failed: 1, failures: [{ target_id: "t1", skill_id: "skill-ig", agent_id: "a1", error: "x" }] },
-        });
-      }
-      return Promise.resolve(undefined);
-    }) as typeof invoke);
-    render(<Inbox />);
-    await screen.findByText("三选测试发现");
-    await userEvent.click(screen.getByRole("button", { name: /采纳并同步/ }));
-    await screen.findByTestId("partial-sync-banner");
-    await userEvent.click(screen.getByRole("button", { name: /忽略/ }));
+    // The card leaves (adoption succeeded) and no banner exists.
     await waitFor(() => {
       expect(screen.queryByText("三选测试发现")).not.toBeInTheDocument();
     });
+    expect(screen.queryByTestId("partial-sync-banner")).not.toBeInTheDocument();
   });
 
   // T3: keyboard A/E/R + reason numbers + Esc layering

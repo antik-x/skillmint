@@ -200,7 +200,17 @@
 - 删除孤儿组件（前端）：SkillEditor / VersionPanel / ImportSkillModal；Projects 页重写为纯使用洞察页（安装/版本/一致性 UI 移除）；`backup_center_repo` 从任务表单选项移除（后端任务类型保留，DB 已有种子行）；
 - 删除死代码：`resolve_diff_core` 相关版本 core、`move_into_center`、`run_startup_consistency_check`、`SkillVersion`/`RollbackResult`/`SkillContent`/`RepoIntegrity`（后者保留为 repair 测试 oracle，标 allow）、`InstallRemoteResult` 模型；`init_app` 的 center repo 引导与迁移剥离；
 - trash 恢复/清除机制保留（TrashPanel 仍在用），其测试改用本地夹具播种回收站；
-- **P3-6c（剩余，需产品决策）**：发现采纳管线（Inbox/Usage 的 PRD-02/PRD-12 流程）仍写 legacy `skills` 表，Today/Dashboard/Inbox 仍调用 `sync_all`/`sync_single`——这些是活功能，迁移到 hub + 索引语义属于管线改造而非机械删除。
+### P3-8 多角色审查修复 ✅ (2026-09-05)
+
+虚拟五类用户（新装机/CLI 老手/团队协作/国内网络/老版本升级）走查后修复：
+- **B1** 技能库 hub 行重复（索引已含 hub 行，删除二次拼接）；
+- **B2** 项目级安装未选项目时 CLI 会以 $HOME 为 cwd 污染家目录——安装按钮改为禁用 + 提示，Hub「安装到项目」同样前置校验；
+- **B3** 回收站「恢复」原样写回已退役 center repo（恢复后不可见）——语义改为**内容找回**：快照恢复进全局 hub 并 git 提交，重名走覆盖/重命名（覆盖的旧目录先快照进回收站，可逆）；回到 agent 目录用 `npx skills add` 显式重装；
+- **B5** `skills_search` 的 HTTP 请求注入 `proxy_env` 代理（此前只有 CLI 的 git 步骤走代理）；
+- **Q4** 安装面板打开即检测 Node 运行时，不可用直接禁用安装并内联给引导文案；
+- **Q5** `skillmint://open/skill/<name>` 改为预填技能库搜索过滤；
+- **Q3a 采纳管线迁移**：Inbox 采纳 / Usage 的 prompt→skill 创建改写全局 hub（git 自动提交、kebab-case 强制），不再自动同步（`sync_summary` 恒为 None）；删除 Inbox 部分同步横幅与重试流；Dashboard 页移除；Today 的「同步健康」改为「技能索引」健康（total/modified/broken + 一键刷新）；`sync_all_command`/`sync_single_skill_command`/`get_sync_targets`/`save_skill_content`/`get_conflict_contents`/`resolve_conflict` 命令面删除；
+- **P3-6c 余量收窄**：采纳管线已迁 hub；sync 引擎（sync.rs）仅剩库函数形态服务 repair/定时任务 legacy 类型与 bundles 流，无任何 UI 入口。
 
 **验收**：`cargo test --lib` 247 通过；`npm run test:ci`（Node 22）166 通过；真实机器上 `npx skills add vercel-labs/agent-skills -s pdf …` 后 app 聚焦即显示该 skill（lock 驱动），卸载走确认 + trash 快照。
 

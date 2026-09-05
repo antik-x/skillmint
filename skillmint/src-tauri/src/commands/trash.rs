@@ -25,13 +25,20 @@ pub fn restore_trash_item(
 ) -> Result<RestoreResult, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     let settings = state.settings.lock().map_err(|e| e.to_string())?;
-    restore_trash_item_impl(&db, &settings, id, conflict_strategy)
+    let hub = crate::hub::global_hub_dir();
+    restore_trash_item_impl(&db, &settings, &hub, id, conflict_strategy)
 }
 
-/// Testable core of [`restore_trash_item`].
+/// Testable core of [`restore_trash_item`]. P3 review fix (B3): the center
+/// repo is retired, so restore means CONTENT RECOVERY into the global private
+/// hub — getting the skill back into agent dirs is a separate, explicit
+/// `npx skills add`. No skills-table/sync-target/binding rebuild happens here.
+///
+/// `hub` is passed explicitly so tests can point at a temp directory.
 pub(crate) fn restore_trash_item_impl(
     db: &crate::db::Db,
     settings: &Settings,
+    hub: &std::path::Path,
     id: i64,
     conflict_strategy: Option<String>,
 ) -> Result<RestoreResult, String> {
@@ -51,137 +58,63 @@ pub(crate) fn restore_trash_item_impl(
         .and_then(|v| v.as_str())
         .ok_or_else(|| "快照元数据缺少 id".to_string())?;
 
-    // Detect a name clash against the live skills table.
-    let clash = db
-        .get_skill_by_name(original_name)
+    crate::hub::ensure_hub(hub, "global").map_err(|e| e.to_string())?;
+
+    let final_name = match hub.join(original_name).exists() {
+        false => original_name.to_string(),
+        true => match conflict_strategy.as_deref() {
+            Some("overwrite") => {
+                // Keep the clashing hub skill reversible: snapshot it into the
+                // trash root next to the hub (~/.skillmint/trash in prod).
+                let clash_dir = hub.join(original_name);
+                let trash_root =
+                    hub.parent().unwrap_or_else(|| std::path::Path::new(".")).join("trash");
+                let now = current_timestamp();
+                let snapshot = trash_root.join(format!("hub-{}-{}", original_name, now));
+                std::fs::create_dir_all(&trash_root).map_err(|e| e.to_string())?;
+                crate::fs::copy_dir_all(&clash_dir, &snapshot)
+                    .map_err(|e| format!("重名快照失败，已中止恢复：{}", e))?;
+                let expires_at =
+                    now + (crate::discovery::config::DISMISS_COOLING_DAYS as u64) * 86400;
+                let _ = db.insert_trash_item(
+                    "skill",
+                    &format!("hub-{}", original_name),
+                    original_name,
+                    &snapshot.to_string_lossy(),
+                    &serde_json::json!({ "source": "hub_overwrite" }),
+                    now,
+                    expires_at,
+                );
+                let _ = std::fs::remove_dir_all(&clash_dir);
+                original_name.to_string()
+            }
+            Some("rename") => format!("{}-restored", original_name),
+            _ => {
+                return Err(format!(
+                    "restore_conflict: Hub 中已存在名为 '{}' 的目录，请选择覆盖/重命名策略",
+                    original_name
+                ));
+            }
+        },
+    };
+
+    let repo_path = hub.join(&final_name);
+    if repo_path.exists() {
+        let _ = std::fs::remove_dir_all(&repo_path);
+    }
+    crate::fs::copy_dir_all(&item.snapshot_path, &repo_path)
+        .map_err(|e| format!("找回快照失败：{}", e))?;
+    crate::hub::auto_commit(hub, &format!("restore: recover {} from trash", final_name))
         .map_err(|e| e.to_string())?;
 
-    let (final_name, final_id, repo_path) = match (&clash, conflict_strategy.as_deref()) {
-        (None, _) => (original_name.to_string(), original_id.to_string(), settings.center_repo.join(original_name)),
-        (Some(_), Some("overwrite")) => {
-            // Move the clashing skill to the trash first (T1 path).
-            drop_existing_skill_to_trash(&db, &settings, clash.as_ref().unwrap())?;
-            (original_name.to_string(), original_id.to_string(), settings.center_repo.join(original_name))
-        }
-        (Some(_), Some("rename")) => {
-            let new_name = format!("{}-restored", original_name);
-            let new_id = crate::db::new_id();
-            (new_name.clone(), new_id, settings.center_repo.join(&new_name))
-        }
-        (Some(_), _) => {
-            return Err(format!(
-                "restore_conflict: 名为 '{}' 的 Skill 已存在，请选择覆盖/重命名策略",
-                original_name
-            ));
-        }
-    };
-
-    if repo_path.exists() {
-        let _ = remove_path(&repo_path);
-    }
-    std::fs::create_dir_all(&repo_path).map_err(|e| e.to_string())?;
-    crate::fs::copy_dir_all(&item.snapshot_path, &repo_path)
-        .map_err(|e| format!("恢复快照失败：{}", e))?;
-
-    // Rebuild the skills row.
-    let now = current_timestamp();
-    let status_str = skill_row
-        .get("status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("draft");
-    let status = match status_str {
-        "approved" => crate::models::SkillStatus::Approved,
-        "candidate" => crate::models::SkillStatus::Candidate,
-        "deprecated" => crate::models::SkillStatus::Deprecated,
-        _ => crate::models::SkillStatus::Draft,
-    };
-    let skill = crate::models::Skill {
-        id: final_id.clone(),
-        name: final_name.clone(),
-        repo_path: repo_path.clone(),
-        created_at: skill_row
-            .get("created_at")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(now),
-        updated_at: now,
-        status,
-    };
-    db.insert_skill(&skill).map_err(|e| e.to_string())?;
-
-    // Rebuild sync_targets: restore them in center_changed so the user
-    // explicitly re-syncs (PRD: restore must never auto-write agent dirs).
-    if let Some(arr) = metadata.get("sync_targets").and_then(|v| v.as_array()) {
-        for t in arr {
-            let agent_id = t.get("agent_id").and_then(|v| v.as_str()).unwrap_or("");
-            let mode = t.get("mode").and_then(|v| v.as_str()).unwrap_or("symlink");
-            let new_target = crate::models::SyncTarget {
-                id: crate::db::new_id(),
-                skill_id: final_id.clone(),
-                skill_name: Some(final_name.clone()),
-                agent_id: agent_id.to_string(),
-                agent_name: t.get("agent_name").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                mode: match mode {
-                    "copy" | "local_copy" => crate::models::SyncMode::Copy,
-                    _ => crate::models::SyncMode::Symlink,
-                },
-                last_sync_at: None,
-                status: crate::models::SyncStatus::CenterChanged,
-            };
-            let _ = db.insert_sync_target(&new_target);
-        }
-    }
-
-    // Rebuild project bindings; skip ones whose project no longer exists.
-    let mut skipped: Vec<String> = Vec::new();
-    if let Some(arr) = metadata.get("bindings").and_then(|v| v.as_array()) {
-        let live_projects: std::collections::HashSet<String> = db
-            .get_projects(&settings.device_id)
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .map(|(id, _name, _path, _last_active)| id)
-            .collect();
-        for b in arr {
-            let pid = b.get("project_id").and_then(|v| v.as_str());
-            if let Some(pid) = pid {
-                if !live_projects.contains(pid) {
-                    if let Some(name) = b.get("project_name").and_then(|v| v.as_str()) {
-                        skipped.push(name.to_string());
-                    } else {
-                        skipped.push(pid.to_string());
-                    }
-                    continue;
-                }
-            }
-            let binding_id = crate::db::new_id();
-            let _ = db.conn_ref().execute(
-                "INSERT OR REPLACE INTO skill_project_bindings
-                 (id, device_id, skill_id, project_id, agent_id, mode, local_path, is_enabled, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                rusqlite::params![
-                    binding_id,
-                    settings.device_id,
-                    final_id,
-                    pid,
-                    b.get("agent_id").and_then(|v| v.as_str()),
-                    b.get("mode").and_then(|v| v.as_str()).unwrap_or("symlink"),
-                    b.get("local_path").and_then(|v| v.as_str()),
-                    if b.get("is_enabled").and_then(|v| v.as_bool()).unwrap_or(true) { 1 } else { 0 },
-                    now,
-                    now,
-                ],
-            );
-        }
-    }
-
-    // Drop the trash row + snapshot now that the restore succeeded.
+    // Drop the trash row + snapshot now that the recovery succeeded.
     let _ = std::fs::remove_dir_all(&item.snapshot_path);
     db.delete_trash_item(id).map_err(|e| e.to_string())?;
 
-    let _ = invalidate_directory_skill_cache(&db, None);
     Ok(RestoreResult {
-        restored_id: final_id,
-        skipped_bindings: skipped,
-        final_name: final_name.clone(),
+        restored_id: original_id.to_string(),
+        skipped_bindings: Vec::new(),
+        final_name,
     })
 }
 

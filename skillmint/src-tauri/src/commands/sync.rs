@@ -1,74 +1,25 @@
 use super::*;
 
-#[tauri::command]
-pub fn sync_all_command(state: State<'_, AppState>) -> Result<SyncAllResult, String> {
-    sync_all_command_impl(state.inner())
-}
 
-pub(crate) fn sync_all_command_impl(state: &AppState) -> Result<SyncAllResult, String> {
-    // P0: prevent concurrent manual sync_all_command runs.
-    if state
-        .sync_all_running
-        .swap(true, std::sync::atomic::Ordering::SeqCst)
-    {
-        return Err("同步已在进行中".to_string());
-    }
-    let result = (|| {
-        let result = run_sync_core(state)?;
-        update_tray_status(state, result.import_conflicts)?;
-        Ok::<_, String>(result)
-    })();
-    state
-        .sync_all_running
-        .store(false, std::sync::atomic::Ordering::SeqCst);
-    result
-}
-
-/// Core sync pipeline, shared by the manual command and the background scheduler.
-/// Holds both `db` and `settings` mutexes for the duration of the run; callers that
-/// also need the tray (the command path) call [`update_tray_status`] afterwards,
-/// because the tray lives in `AppState` and must not be touched while db/settings
-/// locks are held (avoids lock-order surprises in the async scheduler).
-pub fn run_sync_core(state: &AppState) -> Result<SyncAllResult, String> {
+/// Scheduled-task entry point (TaskKind::SyncAll): run one legacy sync pass.
+/// Kept as a thin wrapper — the sync engine has no interactive command
+/// surface since P3-6, but existing scheduled tasks must keep working.
+pub(crate) fn run_sync_core(state: &AppState) -> Result<SyncAllResult, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    let settings = state.settings.lock().map_err(|e| e.to_string())?;
-
-    // 1. Scan for new/changed agent directories
-    scan_and_persist_agents(&db).map_err(|e| e.to_string())?;
-
-    // 2. If center repo is empty, import existing skills from agent directories
-    let (imported_skills, import_conflicts) =
-        import_all_agent_skills(&db, &settings).map_err(|e| e.to_string())?;
-
-    // 3. Ensure every skill has a sync target for every enabled agent.
-    //    In project mode, global auto-sync is PAUSED — only project bindings drive sync.
-    let scope = settings.skill_scope_mode;
-    if scope != crate::models::SkillScopeMode::Project {
-        ensure_sync_targets(&db, &settings).map_err(|e| e.to_string())?;
-    }
-    // Apply project-level skill bindings regardless of mode (they coexist per decision A).
-    apply_project_bindings(&db, &settings).map_err(|e| e.to_string())?;
-
-    // 4. Run the actual sync
-    let report = sync_all(&db).map_err(|e| e.to_string())?;
+    let report = crate::sync::sync_all(&db).map_err(|e| e.to_string())?;
     let conflict_count = report
         .updated
         .iter()
         .filter(|t| t.status == SyncStatus::Conflict)
         .count();
     let success_count = report.updated.len();
-    let failure_count = report.broken.len();
-
-    // Sync may have changed agent directory contents; clear the cached scan results
-    // so the next UI read reflects the new state.
     let _ = invalidate_directory_skill_cache(&db, None);
-
     Ok(SyncAllResult {
         targets: report.updated,
-        imported_skills,
-        import_conflicts: conflict_count + import_conflicts,
+        imported_skills: 0,
+        import_conflicts: conflict_count,
         success_count,
-        failure_count,
+        failure_count: report.broken.len(),
         failures: report.broken,
     })
 }
@@ -244,27 +195,5 @@ pub(crate) fn scan_directory_skills_inner(
     items.sort_by(|a, b| a.name.cmp(&b.name));
     let _ = db.replace_directory_skills(agent_id, &dir, &items, current_timestamp());
     Ok(items)
-}
-
-/// SPEC-C2 T2: retry syncing a single skill (the partial_synced recovery path).
-/// Wraps the internal `sync_single_skill` so the inbox can retry after an
-/// adopt-and-sync that had failures.
-#[tauri::command]
-pub fn sync_single_skill_command(
-    skill_id: String,
-    state: State<'_, AppState>,
-) -> Result<SyncAllResult, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    let report = crate::discovery::sync_single_skill(&db, &skill_id).map_err(|e| e.to_string())?;
-    let success_count = report.updated.len();
-    let failure_count = report.broken.len();
-    Ok(SyncAllResult {
-        targets: report.updated,
-        imported_skills: 0,
-        import_conflicts: 0,
-        success_count,
-        failure_count,
-        failures: report.broken,
-    })
 }
 

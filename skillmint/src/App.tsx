@@ -22,7 +22,6 @@ const Agents = lazy(() => import("./pages/Agents"));
 const Projects = lazy(() => import("./pages/Projects"));
 const Usage = lazy(() => import("./pages/Usage"));
 const DailySummaries = lazy(() => import("./pages/DailySummaries"));
-const Dashboard = lazy(() => import("./pages/Dashboard"));
 const Settings = lazy(() => import("./pages/Settings"));
 const Onboarding = lazy(() => import("./pages/Onboarding"));
 
@@ -186,8 +185,6 @@ function App() {
                   <Settings />
                 </ErrorBoundary>
               )}
-              {/* Legacy routes kept reachable for redirects / bookmarks. */}
-              {activeTab === "dashboard" && <Dashboard />}
               {activeTab === "dailySummaries" && <DailySummaries />}
             </PageTransition>
           </Suspense>

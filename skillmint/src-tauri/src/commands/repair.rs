@@ -1,4 +1,5 @@
 use super::*;
+use crate::sync::apply_sync_target_and_record;
 
 /// SPEC-F4 T12 / SPEC-F5 T5: migrate skills that live directly under the legacy
 /// center root (`~/.skillmint/<skill>`) into the new repo subdir

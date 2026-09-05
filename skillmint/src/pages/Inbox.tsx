@@ -14,8 +14,6 @@ import type {
   DiscoveryKind,
   DismissReason,
   GateRejection,
-  SyncAllResult,
-  SyncFailure,
 } from "../types";
 
 const EXPIRE_DAYS = 7;
@@ -87,17 +85,6 @@ function isAiScored(discovery: Discovery): boolean {
   return p?.enhanced_by === "llm" || p?.llm_enhanced === true;
 }
 
-type SyncBanner =
-  | { kind: "none" }
-  | {
-      kind: "partial";
-      skillId: string;
-      failed: number;
-      success: number;
-      failures: SyncFailure[];
-      retrying: boolean;
-    }
-  | { kind: "resolved" };
 
 export default function Inbox() {
   const setActiveTab = useAppStore((state) => state.setActiveTab);
@@ -118,7 +105,6 @@ export default function Inbox() {
   // SPEC-C2 T1: dismiss reason inline picker state.
   const [dismissOpen, setDismissOpen] = useState(false);
   // SPEC-C2 T2: partial_synced banner state.
-  const [syncBanner, setSyncBanner] = useState<SyncBanner>({ kind: "none" });
   // SPEC-C2 T4: low-confidence tab.
   const [activeTab, setActiveTabInbox] = useState<"pending" | "lowConfidence">("pending");
   const [lowConfItems, setLowConfItems] = useState<GateRejection[] | null>(null);
@@ -201,7 +187,6 @@ export default function Inbox() {
     (id: string) => {
       setItems((prev) => prev?.filter((d) => d.id !== id) ?? null);
       setDismissOpen(false);
-      setSyncBanner({ kind: "none" });
       bumpInboxRefresh();
     },
     [bumpInboxRefresh]
@@ -283,25 +268,9 @@ export default function Inbox() {
           showError("沉淀失败：未返回 Skill ID");
           return;
         }
-        // SPEC-C2 T2: check sync_summary for partial failures.
-        const summary = result.sync_summary;
-        if (summary && summary.failed > 0) {
-          // Card stays; show recovery banner.
-          setAnimating(null);
-          setSyncBanner({
-            kind: "partial",
-            skillId: result.created_skill_id,
-            failed: summary.failed,
-            success: summary.success,
-            failures: summary.failures,
-            retrying: false,
-          });
-          showInfo(`已入库，${summary.failed} 个 Agent 同步失败`);
-          return;
-        }
-        // Full success: toast + sediment animation + leave.
-        const agentCount = summary?.success ?? 0;
-        showSuccess(agentCount > 0 ? `已入库并同步到 ${agentCount} 个 Agent` : "已入库");
+        // P3 review (Q3a): sync_summary is always None — adoption lands in the
+        // global hub, distribution is an explicit `npx skills add`.
+        showSuccess("已入库到全局 Hub，可用 npx skills add 分发");
         setDecisions((prev) => ({ ...prev, accepted: prev.accepted + 1 }));
         setTimeout(() => {
           removeFromList(discovery.id);
@@ -314,47 +283,6 @@ export default function Inbox() {
     },
     [animating, decide, handleDismiss, removeFromList]
   );
-
-  // SPEC-C2 T2: retry sync for the partially-synced skill.
-  const handleRetrySync = useCallback(async () => {
-    if (syncBanner.kind !== "partial") return;
-    setSyncBanner({ ...syncBanner, retrying: true });
-    try {
-      const result = await invoke<SyncAllResult>("sync_single_skill_command", {
-        skillId: syncBanner.skillId,
-      });
-      if (result.failure_count === 0) {
-        showSuccess("同步成功");
-        setSyncBanner({ kind: "resolved" });
-        // Leave the card after a brief confirmation.
-        setTimeout(() => {
-          if (current) removeFromList(current.id);
-          setSyncBanner({ kind: "none" });
-        }, 800);
-      } else {
-        setSyncBanner({
-          ...syncBanner,
-          retrying: false,
-          failed: result.failure_count,
-          success: result.success_count,
-          failures: result.failures,
-        });
-        showError(`仍有 ${result.failure_count} 个 Agent 同步失败`);
-      }
-    } catch (err) {
-      setSyncBanner({ ...syncBanner, retrying: false });
-      showError(humanizeError(err, { context: "重试同步" }));
-    }
-  }, [syncBanner, current, removeFromList]);
-
-  // SPEC-C2 T2: ignore the partial failure (card leaves, skill stays).
-  const handleIgnorePartial = useCallback(() => {
-    if (!current) return;
-    setDecisions((prev) => ({ ...prev, accepted: prev.accepted + 1 }));
-    removeFromList(current.id);
-    setSyncBanner({ kind: "none" });
-    showSuccess("已入库，可稍后在 Skill 详情同步");
-  }, [current, removeFromList]);
 
   const handlePrimary = useCallback(() => {
     if (!current) return;
@@ -515,7 +443,6 @@ export default function Inbox() {
   const hiddenCount = Math.max(0, evidence.length - 2);
   const draft = current?.payload?.draft_skill;
   const stats = current?.payload?.stats;
-  const isPartial = syncBanner.kind === "partial";
 
   return (
     <div className="flex h-full flex-col items-center overflow-auto p-7">
@@ -548,45 +475,11 @@ export default function Inbox() {
       {/* Big card */}
       <Card
         className={`relative w-full max-w-xl border-l-[3px] border-l-amber p-6 shadow-[0_0_0_1px_var(--amber-glow),0_8px_40px_rgba(0,0,0,0.4)] transition-all duration-[250ms] ${
-          animating === "accept" && !isPartial
+          animating === "accept"
             ? "scale-95 opacity-0"
             : "scale-100 opacity-100"
         }`}
       >
-        {/* SPEC-C2 T2: partial_synced recovery banner. */}
-        {syncBanner.kind === "partial" && (
-          <div className="mb-4 rounded-lg border border-warning/30 bg-warning/10 p-3" data-testid="partial-sync-banner">
-            <div className="flex items-center gap-2 text-sm text-warning">
-              <span className="font-medium">
-                已入库，{syncBanner.failed} 个 Agent 同步失败
-              </span>
-            </div>
-            {syncBanner.failures[0]?.recovery_hint && (
-              <p className="mt-1 text-xs text-secondary">
-                {syncBanner.failures[0].agent_name ?? syncBanner.failures[0].agent_id}：{syncBanner.failures[0].recovery_hint}
-              </p>
-            )}
-            <div className="mt-2 flex gap-2">
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={handleRetrySync}
-                loading={syncBanner.retrying}
-                disabled={syncBanner.retrying}
-              >
-                重试同步
-              </Button>
-              <Button variant="ghost" size="sm" onClick={handleIgnorePartial}>
-                忽略
-              </Button>
-            </div>
-          </div>
-        )}
-        {syncBanner.kind === "resolved" && (
-          <div className="mb-4 rounded-lg border border-success/30 bg-success/10 p-3 text-sm text-success">
-            同步成功
-          </div>
-        )}
 
         {/* Eyebrow */}
         <div className="mb-1.5 flex items-center gap-2 text-2xs font-mono uppercase tracking-wider text-amber">
@@ -675,7 +568,7 @@ export default function Inbox() {
           {hasThreeChoices ? (
             <>
               {/* Three buttons: adopt-and-sync / edit-then-adopt / reject. */}
-              {!dismissOpen && !isPartial && (
+              {!dismissOpen && (
                 <div className="flex items-center gap-2" data-testid="three-choice-actions">
                   <Button
                     variant="primary"

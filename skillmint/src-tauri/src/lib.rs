@@ -517,11 +517,9 @@ pub fn run() {
             commands::get_skills,
             commands::get_agents,
             commands::save_agent,
-            commands::get_sync_targets,
             commands::scan_agents,
             commands::scan_agent_skills,
             commands::get_agent_skill_counts,
-            commands::sync_all_command,
             commands::clear_collected_data,
             commands::reset_database,
             // PRD-10: scheduled tasks
@@ -536,7 +534,6 @@ pub fn run() {
             commands::list_trash_items,
             commands::restore_trash_item,
             commands::purge_trash_item,
-            commands::save_skill_content,
             commands::open_path_in_terminal,
             commands::open_skill_in_editor,
             commands::get_settings,
@@ -584,7 +581,6 @@ pub fn run() {
             // SPEC-C1: gate-rejection ledger (low-confidence band etc.)
             commands::list_gate_rejections,
             // SPEC-C2: retry sync for a single skill (partial_synced recovery)
-            commands::sync_single_skill_command,
             commands::get_growth_metrics,
             commands::generate_weekly_report,
             commands::get_weekly_report,
@@ -612,8 +608,6 @@ pub fn run() {
             commands::get_related_skills,
             commands::export_knowledge_graph,
             commands::import_knowledge_graph,
-            commands::get_conflict_contents,
-            commands::resolve_conflict,
             // PRD-0 §4.8: Center Repo zip backup / restore
             commands::backup_center_repo,
             commands::restore_center_repo,

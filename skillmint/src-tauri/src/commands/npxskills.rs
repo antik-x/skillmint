@@ -331,20 +331,26 @@ pub struct SkillsSearchHit {
 
 /// Search the skills hub registry (skills.sh by default, `SKILLS_API_URL`
 /// mirror when configured). The CLI's own `find` is interactive fzf, so the
-/// app talks to the same HTTP API directly.
+/// app talks to the same HTTP API directly. P3 review fix (B5): the request
+/// honors the `proxy_env` setting — the CLI's git steps get the proxy via env
+/// injection, so the search path must not be the odd one out.
 #[tauri::command]
 pub fn skills_search(state: State<'_, AppState>, query: String, limit: Option<u32>) -> Result<Vec<SkillsSearchHit>, String> {
-    let base = {
+    let (base, proxy) = {
         let s = state.settings.lock().map_err(|e| e.to_string())?;
         let url = s.skills_api_url.trim().to_string();
-        if url.is_empty() { "https://skills.sh".to_string() } else { url }
+        let base = if url.is_empty() { "https://skills.sh".to_string() } else { url };
+        (base, s.proxy_env.trim().to_string())
     };
     let limit = limit.unwrap_or(20).clamp(1, 50);
     let url = format!("{}/api/search?q={}&limit={}", base.trim_end_matches('/'), urlencoding_encode(&query), limit);
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let mut builder = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(15));
+    if !proxy.is_empty() {
+        builder = builder
+            .proxy(reqwest::Proxy::all(&proxy).map_err(|e| format!("代理地址无效（{proxy}）：{e}"))?);
+    }
+    let client = builder.build().map_err(|e| e.to_string())?;
     let resp = client.get(&url).header("User-Agent", "SkillMint").send().map_err(|e| format!("搜索失败（{url}）：{e}"))?;
     if !resp.status().is_success() {
         return Err(format!("搜索服务返回 {}（{url}）", resp.status()));

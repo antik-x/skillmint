@@ -14,7 +14,7 @@ use crate::fs::{
 };
 use crate::models::{
     Agent, AgentSkillItem, ApplyBundleResult, AppSettings, BundleExport, BundleExportSkill,
-    ConflictContent, ConflictPayload, ConflictResolution, DiffStrategy, Discovery,
+    Discovery,
     DiscoveryDecisionResult, DiscoveryRunResult, GitCommit, GrowthMetrics,
     ProjectDetail, RepoIntegrity, ResolvedSkill, ResolveResult, RestoreResult,
     RestoreSummary, SafetyScanResult, ScheduledTask, SearchResult, Skill, SkillBundle,
@@ -24,8 +24,8 @@ use crate::models::{
 };
 use crate::remote;
 use crate::scan::{expand_path, scan_and_persist_agents};
+use crate::sync::{apply_sync_target_and_record, resolve_skill_link};
 use crate::settings::Settings;
-use crate::sync::{apply_sync_target_and_record, resolve_skill_link, sync_all};
 use crate::AppState;
 
 mod agents;
@@ -120,12 +120,6 @@ pub fn get_skills(state: State<'_, AppState>) -> Result<Vec<Skill>, String> {
 pub fn get_agents(state: State<'_, AppState>) -> Result<Vec<Agent>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     db.get_agents().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn get_sync_targets(state: State<'_, AppState>) -> Result<Vec<SyncTarget>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    db.get_sync_targets().map_err(|e| e.to_string())
 }
 
 const DATA_MANAGEMENT_CONFIRM_CODE: &str = "DELETE";
@@ -294,107 +288,6 @@ pub fn open_path_in_terminal(path: String, handle: AppHandle) -> Result<(), Stri
         .opener()
         .open_path(dir.to_string_lossy().to_string(), Some("Terminal"))
         .map_err(|e| format!("无法打开终端：{}", e))
-}
-
-/// Save frontmatter + body back to SKILL.md, optionally rename the skill directory,
-/// and trigger knowledge-graph re-analysis asynchronously.
-#[tauri::command]
-pub fn save_skill_content(
-    skill_id: String,
-    frontmatter: serde_json::Value,
-    body: String,
-    force: Option<bool>,
-    state: State<'_, AppState>,
-) -> Result<Skill, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    let settings = state.settings.lock().map_err(|e| e.to_string())?;
-
-    let mut skill = db
-        .get_skill_by_id(&skill_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Skill not found".to_string())?;
-
-    // Derive the new skill name from frontmatter if present; otherwise keep current.
-    let new_name = frontmatter
-        .get("name")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .unwrap_or(&skill.name)
-        .to_string();
-
-    if new_name != skill.name {
-        // Ensure target directory does not already exist (case-insensitive on macOS).
-        let new_repo_path = settings.center_repo.join(&new_name);
-        if new_repo_path.exists() {
-            return Err(format!("已存在同名 Skill 目录「{}」", new_name));
-        }
-        // Move directory and update sync target agent symlinks/copies.
-        let agents = db.get_agents().map_err(|e| e.to_string())?;
-        let targets = db.get_sync_targets().map_err(|e| e.to_string())?;
-        for target in targets.iter().filter(|t| t.skill_id == skill_id) {
-            if let Some(agent) = agents.iter().find(|a| a.id == target.agent_id) {
-                let old_agent_path = agent.skill_directory.join(&skill.name);
-                if old_agent_path.exists() || old_agent_path.is_symlink() {
-                    let _ = remove_path(&old_agent_path);
-                }
-            }
-        }
-        std::fs::rename(&skill.repo_path, &new_repo_path).map_err(|e| e.to_string())?;
-        skill.repo_path = new_repo_path;
-        skill.name = new_name.clone();
-        // Note: sync_targets has no skill_name column — the name is derived
-        // from a JOIN with skills.name, so updating the skill row below is
-        // enough (P1-4 removed a broken update against that phantom column).
-        // Re-create agent targets at the new name.
-        let agents = db.get_agents().map_err(|e| e.to_string())?;
-        let targets = db.get_sync_targets().map_err(|e| e.to_string())?;
-        for target in targets.iter().filter(|t| t.skill_id == skill_id) {
-            if let Some(agent) = agents.iter().find(|a| a.id == target.agent_id) {
-                let _ = apply_sync_target_and_record(&db, target, &skill, agent);
-            }
-        }
-    }
-
-    // Detect external modification to avoid accidentally overwriting concurrent edits.
-    // SPEC-F2 T10: callers may pass force=true to keep the in-memory version.
-    let md_path = skill.repo_path.join("SKILL.md");
-    if !force.unwrap_or(false) {
-        let disk_mtime = std::fs::metadata(&md_path)
-            .and_then(|m| m.modified())
-            .ok();
-        let db_mtime = std::time::UNIX_EPOCH + std::time::Duration::from_secs(skill.updated_at);
-        if let Some(disk) = disk_mtime {
-            if disk > db_mtime + std::time::Duration::from_secs(2) {
-                return Err(
-                    "SKILL.md 已被外部编辑器修改，请刷新后重试。".to_string(),
-                );
-            }
-        }
-    }
-
-    // G3-③: one-time safety snapshot before the first overwrite of `latest`.
-    if let Err(e) = crate::sync::ensure_first_version_snapshot(&skill.repo_path) {
-        eprintln!("[skillmint] failed to create first-version snapshot: {}", e);
-    }
-
-    // Write the file.
-    let content = serialize_skill_md(&frontmatter, &body);
-    std::fs::write(&md_path, content).map_err(|e| e.to_string())?;
-
-    // Update DB metadata.
-    let now = current_timestamp();
-    skill.updated_at = now;
-    db.update_skill(&skill).map_err(|e| e.to_string())?;
-
-    // PRD-09: trigger KG analysis after save. We already hold the locks; run it
-    // synchronously here because `analyze_skill` is bounded (~300ms per skill) and
-    // returning the updated skill to the UI matters more than deferring.
-    let device_id = settings.device_id.clone();
-    trigger_kg_analysis(&db, &device_id, &skill);
-    let _ = invalidate_directory_skill_cache(&db, None);
-
-    Ok(skill)
 }
 
 fn parse_skill_md(raw: &str) -> (serde_json::Value, String) {
@@ -1073,54 +966,6 @@ pub fn save_settings(
     Ok(state_to_model(&settings))
 }
 
-#[tauri::command]
-pub fn get_conflict_contents(
-    sync_target_id: String,
-    state: State<'_, AppState>,
-) -> Result<ConflictContent, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-
-    let target = db
-        .get_sync_target_by_id(&sync_target_id)
-        .map_err(|e| e.to_string())?
-        .ok_or("Sync target not found")?;
-
-    let skill = db
-        .get_skills()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .find(|s| s.id == target.skill_id)
-        .ok_or("Skill not found")?;
-
-    let agent = db
-        .get_agents()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .find(|a| a.id == target.agent_id)
-        .ok_or("Agent not found")?;
-
-    let center_md = skill.repo_path.join("SKILL.md");
-    let agent_md = agent.skill_directory.join(&skill.name).join("SKILL.md");
-
-    let center_content = std::fs::read_to_string(&center_md).unwrap_or_default();
-    let local_content = std::fs::read_to_string(&agent_md).unwrap_or_default();
-
-    let center_updated_at = file_mtime_secs(&center_md).or(Some(skill.updated_at));
-    let local_updated_at = file_mtime_secs(&agent_md);
-
-    Ok(ConflictContent {
-        sync_target_id,
-        skill_name: skill.name,
-        agent_name: agent.name,
-        center_content,
-        local_content,
-        center_updated_at,
-        local_updated_at,
-        center_author: None,
-        local_author: None,
-    })
-}
-
 fn file_mtime_secs(path: &std::path::Path) -> Option<u64> {
     std::fs::metadata(path)
         .ok()?
@@ -1129,73 +974,6 @@ fn file_mtime_secs(path: &std::path::Path) -> Option<u64> {
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
         .map(|d| d.as_secs())
-}
-
-#[tauri::command]
-pub fn resolve_conflict(
-    payload: ConflictPayload,
-    state: State<'_, AppState>,
-) -> Result<SyncTarget, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-
-    let target = db
-        .get_sync_target_by_id(&payload.sync_target_id)
-        .map_err(|e| e.to_string())?
-        .ok_or("Sync target not found")?;
-
-    let skill = db
-        .get_skills()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .find(|s| s.id == target.skill_id)
-        .ok_or("Skill not found")?;
-
-    let agent = db
-        .get_agents()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .find(|a| a.id == target.agent_id)
-        .ok_or("Agent not found")?;
-
-    match payload.resolution {
-        ConflictResolution::KeepCenter => {
-            apply_sync_target_and_record(&db, &target, &skill, &agent).map_err(|e| e.to_string())?;
-        }
-        ConflictResolution::KeepLocal => {
-            let agent_path = agent.skill_directory.join(&skill.name);
-            // Stage the agent copy next to the center repo, then atomically swap it
-            // in so a crash never leaves the center repo half-written.
-            let staging = skill.repo_path.with_extension("skillmint-staging");
-            if staging.exists() || staging.is_symlink() {
-                let _ = remove_path(&staging);
-            }
-            copy_dir_all(&agent_path, &staging).map_err(|e| e.to_string())?;
-            crate::fs::replace_path_atomic(&staging, &skill.repo_path).map_err(|e| e.to_string())?;
-            apply_sync_target_and_record(&db, &target, &skill, &agent).map_err(|e| e.to_string())?;
-        }
-        ConflictResolution::Skip => {
-            // do nothing
-        }
-    }
-
-    if payload.resolution != ConflictResolution::Skip {
-        let _ = invalidate_directory_skill_cache(&db, Some(&target.agent_id));
-    }
-
-    let result = db
-        .get_sync_target_by_id(&target.id)
-        .map_err(|e| e.to_string())?
-        .ok_or("Sync target disappeared".to_string())?;
-
-    // Update tray status after conflict resolution
-    let targets = db.get_sync_targets().map_err(|e| e.to_string())?;
-    let conflict_count = targets
-        .iter()
-        .filter(|t| t.status == SyncStatus::Conflict)
-        .count();
-    update_tray_status(&state, conflict_count)?;
-
-    Ok(result)
 }
 
 // =============================================================================
@@ -1328,73 +1106,6 @@ pub fn get_project_detail(
         settings.device_id.clone()
     };
     build_project_detail(&db, &device_id, &project_id).map_err(|e| e.to_string())
-}
-
-/// Core logic of `resolve_skill_diff_command`.
-///
-/// `strategy` is the raw string from the frontend (`keep_center` / `keep_project` /
-/// `keep_project_backup` / `versionize`); `keep_project_backup` is KeepProject with
-/// `backup=true` (PRD §4.5c 留底, DECISIONION 16). `note` attaches to a Versionize
-/// snapshot sidecar (PRD §4.5c).
-pub fn resolve_diff_core(
-    db: &crate::db::Db,
-    binding_id: &str,
-    strategy: &str,
-    note: Option<&str>,
-) -> Result<ResolveResult, anyhow::Error> {
-    let (enum_strategy, backup) = match strategy {
-        "keep_center" => (DiffStrategy::KeepCenter, false),
-        "keep_project" => (DiffStrategy::KeepProject, false),
-        "keep_project_backup" => (DiffStrategy::KeepProject, true),
-        "versionize" => (DiffStrategy::Versionize, false),
-        other => anyhow::bail!("unknown strategy: {}", other),
-    };
-
-    let binding = db
-        .get_skill_project_binding(binding_id)?
-        .ok_or_else(|| anyhow::anyhow!("Binding not found"))?;
-    let skill = db
-        .get_skill_by_id(&binding.skill_id)?
-        .ok_or_else(|| anyhow::anyhow!("Skill not found"))?;
-    let agent_id = binding
-        .agent_id
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("Binding has no agent; cannot resolve a physical diff"))?;
-    let agent = db
-        .get_agents()?
-        .into_iter()
-        .find(|a| a.id == agent_id)
-        .ok_or_else(|| anyhow::anyhow!("Agent not found"))?;
-
-    let project_skill_path = agent.skill_directory.join(&skill.name);
-    let outcome = crate::sync::resolve_skill_diff(
-        enum_strategy,
-        &skill,
-        &project_skill_path,
-        &agent,
-        db,
-        note,
-        backup,
-    )?;
-
-    match enum_strategy {
-        DiffStrategy::Versionize => {
-            if let Some(ref v) = outcome.new_version {
-                db.set_binding_pinned_version(binding_id, Some(v))?;
-            }
-        }
-        _ => {
-            // Merge strategies follow latest (clear pin).
-            db.set_binding_pinned_version(binding_id, None)?;
-        }
-    }
-
-    Ok(ResolveResult {
-        strategy: strategy.to_string(),
-        new_version: outcome.new_version,
-        project_path: outcome.project_dir.to_string_lossy().to_string(),
-        latest_path: outcome.latest_dir.to_string_lossy().to_string(),
-    })
 }
 
 /// Core logic of `pin_binding_version` (testable without Tauri runtime).
@@ -1683,131 +1394,80 @@ pub(crate) fn generate_skill_description(prompt_text: &str) -> String {
     format!("{}\n\n适用场景：{}", sentence, scenario)
 }
 
-#[tauri::command]
-/// Internal creation helper for the discovery-adoption pipeline (PRD-02/PRD-12:
-/// Inbox + Usage still author through the legacy `skills` store). NOT a Tauri
-/// command since P3-6b — the GUI authoring path is `hub_create_skill` (P3-5).
-/// Migration of this pipeline into the private hubs is tracked as P3-6c.
-pub fn create_skill_internal(
-    name: String,
-    agent_ids: Vec<String>,
-    state: State<'_, AppState>,
-) -> Result<Skill, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    let settings = state.settings.lock().map_err(|e| e.to_string())?;
-
-    let skill_path = settings.center_repo.join(&name);
-    std::fs::create_dir_all(&skill_path).map_err(|e| e.to_string())?;
-
-    let skill_md = skill_path.join("SKILL.md");
-    if !skill_md.exists() {
-        let template = format!("# {}\n\n## Description\n\nDescribe what this Skill does.\n\n## Usage\n\nExplain how Agent should use it.\n", name);
-        std::fs::write(&skill_md, template).map_err(|e| e.to_string())?;
-    }
-
-    let now = current_timestamp();
-    let skill = Skill {
-        id: new_id(),
-        name,
-        repo_path: skill_path,
-        created_at: now,
-        updated_at: now,
-        status: crate::models::SkillStatus::Draft,
-    };
-
-    db.insert_skill(&skill).map_err(|e| e.to_string())?;
-
-    let agents = db.get_agents().map_err(|e| e.to_string())?;
-    for agent_id in agent_ids {
-        if let Some(agent) = agents.iter().find(|a| a.id == agent_id) {
-            let target = SyncTarget {
-                id: new_id(),
-                skill_id: skill.id.clone(),
-                skill_name: Some(skill.name.clone()),
-                agent_id: agent.id.clone(),
-                agent_name: Some(agent.name.clone()),
-                mode: settings.default_sync_mode,
-                last_sync_at: None,
-                status: SyncStatus::CenterChanged,
-            };
-            db.insert_sync_target(&target).map_err(|e| e.to_string())?;
-            let _ = apply_sync_target_and_record(&db, &target, &skill, agent).map_err(|e| e.to_string())?;
-        }
-    }
-
-    // PRD-03: auto-trigger knowledge-graph extraction on skill creation.
-    trigger_kg_analysis(&db, &settings.device_id, &skill);
-    let _ = invalidate_directory_skill_cache(&db, None);
-    Ok(skill)
-}
-
+/// PRD-02: turn a repeated prompt into a hub skill. P3 review (Q3a): the
+/// created skill lands in the global private hub (git auto-commit) instead of
+/// the retired center repo, so it is immediately visible in the skills library
+/// and distributable via `npx skills add`. Optional `name`/`description`
+/// override the auto-derived ones (the Usage page passes the user-edited
+/// values directly, replacing the old create-then-rewrite flow).
 #[tauri::command]
 pub fn generate_skill_from_prompt(
     prompt_text: String,
-    agent_ids: Option<Vec<String>>,
-    project_id: Option<String>,
+    name: Option<String>,
+    description: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Skill, String> {
     // SPEC-C1 T4: record rule-gate rejections. When the prompt fails the
     // structural validation we log it as a `rule_gate` gate_rejection so the
     // inbox can explain why a candidate never became a Skill.
-    let name = validate_prompt_for_skill(&prompt_text).map_err(|err| {
+    let derived_name = validate_prompt_for_skill(&prompt_text).map_err(|err| {
         if let Ok(db) = state.db.lock() {
             record_rule_gate_rejection(&db, &prompt_text, &err);
         }
         err
     })?;
 
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    // PRD-02 §3.3 c: handle "already exists" conflict — return error instead of silent overwrite.
-    if db.get_skill_by_name(&name).map_err(|e| e.to_string())?.is_some() {
-        return Err(format!(
-            "已存在同名 Skill「{}」，请改名或查看已有 Skill。",
-            name
-        ));
-    }
-    drop(db); // release lock before calling create_skill (which re-locks)
+    let skill_name = name
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or(derived_name);
+    crate::hub::validate_skill_name(&skill_name).map_err(|e| e.to_string())?;
 
     let prompt_trimmed = prompt_text.trim();
-    let desc = generate_skill_description(prompt_trimmed);
-    let agents = agent_ids.unwrap_or_default();
-    let skill = create_skill_internal(name, agents, state.clone())?;
-    // Overwrite the templated SKILL.md with the prompt-derived description.
-    let skill_md = skill.repo_path.join("SKILL.md");
+    let desc = description
+        .map(|d| d.trim().to_string())
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| generate_skill_description(prompt_trimmed));
+
+    let hub_dir = crate::hub::global_hub_dir();
+    if hub_dir.join(&skill_name).exists() {
+        return Err(format!("Hub 中已存在同名 Skill「{}」，请改名或查看已有 Skill。", skill_name));
+    }
+
+    let dir = crate::hub::create_skill(&hub_dir, "global", &skill_name, &desc)
+        .map_err(|e| e.to_string())?;
     let body = format!(
         "# {}\n\n## Description\n\n{}\n\n## Usage\n\nDerived from a repeated prompt.\n",
-        skill.name, desc
+        skill_name, desc
     );
-    let _ = std::fs::write(&skill_md, body);
+    // Keep the frontmatter hub::create_skill wrote; replace the scaffold body.
+    let skill_md = dir.join("SKILL.md");
+    let existing = std::fs::read_to_string(&skill_md).map_err(|e| e.to_string())?;
+    let merged = if existing.starts_with("---") {
+        if let Some(idx) = existing[3..].find("\n---") {
+            let frontmatter = &existing[..3 + idx + 4];
+            format!("{}\n{}", frontmatter, body)
+        } else {
+            body
+        }
+    } else {
+        body
+    };
+    std::fs::write(&skill_md, merged).map_err(|e| e.to_string())?;
 
-    // PRD-01: optionally bind to a project.
-    if let Some(pid) = project_id {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        let settings = state.settings.lock().map_err(|e| e.to_string())?;
-        let binding = crate::models::SkillProjectBinding {
-            id: new_id(),
-            device_id: settings.device_id.clone(),
-            skill_id: skill.id.clone(),
-            skill_name: Some(skill.name.clone()),
-            project_id: Some(pid),
-            project_name: None,
-            agent_id: None,
-            mode: "reference".to_string(),
-            local_path: None,
-            is_enabled: true,
-            pinned_version: None,
-        };
-        db.upsert_skill_project_binding(&binding).map_err(|e| e.to_string())?;
-    }
-    Ok(skill)
+    let now = current_timestamp();
+    Ok(Skill {
+        id: skill_name.clone(),
+        name: skill_name,
+        repo_path: dir,
+        created_at: now,
+        updated_at: now,
+        status: crate::models::SkillStatus::Draft,
+    })
 }
 
-/// SPEC-F5 T3: preview the skill name + description that would be generated
-/// from a prompt, without persisting anything. Returns the tokenized name
-/// (reusing `validate_prompt_for_skill`) and the description (reusing
-/// `generate_skill_description`). On validation failure returns Err with the
-/// user-facing reason, so the sediment dialog can show why and disable confirm.
-#[derive(Debug, serde::Serialize)]
+/// PRD-02 §3.3b: name/description preview shown before creating from a prompt.
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SkillPromptPreview {
     pub name: String,
     pub description: String,
@@ -1899,11 +1559,13 @@ pub fn decide_discovery(
     state: State<'_, AppState>,
 ) -> Result<DiscoveryDecisionResult, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    let (device_id, center_repo) = {
+    let device_id = {
         let settings = state.settings.lock().map_err(|e| e.to_string())?;
-        (settings.device_id.clone(), settings.center_repo.clone())
+        settings.device_id.clone()
     };
-    crate::discovery::decide_discovery(&db, &device_id, &center_repo, &id, &action, reason.as_deref())
+    // P3 review (Q3a): adoption authors into the global private hub.
+    let hub = crate::hub::global_hub_dir();
+    crate::discovery::decide_discovery(&db, &device_id, &hub, &id, &action, reason.as_deref())
         .map_err(|e| e.to_string())
 }
 
