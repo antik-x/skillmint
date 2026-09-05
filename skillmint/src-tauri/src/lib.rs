@@ -24,6 +24,7 @@ mod llm;
 mod metrics;
 mod models;
 mod npx;
+mod openviking;
 mod pricing;
 mod remote;
 mod scan;
@@ -538,6 +539,7 @@ pub fn run() {
             commands::open_skill_in_editor,
             commands::get_settings,
             commands::save_settings,
+            commands::openviking_probe,
             commands::get_device_id,
             commands::collect_usage_data,
             commands::get_collection_status,

@@ -171,6 +171,18 @@ export interface AppSettings {
   disable_telemetry?: boolean;
   /** P3: explicit node bin dir for GUI PATH limitations. */
   node_path_override?: string;
+  /** P4: OpenViking context-database integration (default off). */
+  openviking?: OpenVikingConfig;
+}
+
+/** P4: OpenViking integration config. `api_key` lives in the Keychain. */
+export interface OpenVikingConfig {
+  /** Independent opt-in; combined with `remote_enabled` gates every request. */
+  enabled: boolean;
+  /** Base URL of the local OpenViking HTTP server. */
+  base_url: string;
+  /** In-memory only; persisted to the platform credential store by the backend. */
+  api_key?: string;
 }
 
 /** PRD-08: optional AI/LLM configuration (OpenAI-compatible or Anthropic). */

@@ -324,3 +324,20 @@ pack/export、backup 或 snapshot 都不改变“本地 Agent/npx/Hub 才是真�
 - 控制面：`remote_enabled` 总门控 + OV 独立 opt-in + 会话正文二次同意。
 - 失败语义：OV 永远只增强；不可用、未启用或不兼容时，规则版完整运行。
 - 安装语义：任何推荐最终仍经 `hub.rs` 沉淀、经 `npx.rs` 执行生命周期变更。
+
+## 10. 真机实测补充（2026-09-06，P0 实施时验证）
+
+以下事实已在本地 v0.4.10 实测确认，P1/P2 设计与实施必须以此为前提：
+
+1. **root/admin key 不能访问数据接口**：root key 对 `console/dashboard/summary` 返回 200，
+   但对 `/api/v1/skills`、`/api/v1/relations` 返回 403。数据接口需要 **user 级 API key**——
+   通过 `POST /api/v1/admin/accounts`（account_id + admin_user_id）创建账户时返回的
+   `user_key`，或经 `/admin/accounts/{id}/users` + `.../key` 签发。已为本机创建
+   `skillmint` 账户（admin user: `skillmint-agent`）。
+2. **`GET /api/v1/relations` 必带 `uri` 查询参数**（缺省 400）：`viking://`（根）可用。
+   探针定稿为 `dashboard/summary`（鉴权）+ `/skills` + `/relations?uri=viking://`。
+3. **关系 scope 实际为 `agent` / `resources` / `session` / `user`**（INVALID_URI 提示），
+   不存在 `skills` scope——P1"技能关系图谱"需要确认技能投影挂到哪个 scope（暂定
+   `resources` 或 `user` 命名空间，实施前实测 `POST /api/v1/skills` 落点）。
+4. SkillMint 探针/UI 已按上述实现：`openviking.rs`（门控+探针+分类），
+   设置页「AI 分析（可选）」内 OpenViking 区块（开关/地址/key/探测按钮/状态徽标）。

@@ -147,6 +147,9 @@ pub struct AppSettings {
     /// P3: explicit node bin dir (or node binary path) for GUI PATH limitations.
     #[serde(default)]
     pub node_path_override: String,
+    /// P4: OpenViking context-database integration (default off).
+    #[serde(default)]
+    pub openviking: crate::settings::OpenVikingConfig,
 }
 
 

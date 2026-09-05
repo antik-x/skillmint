@@ -113,6 +113,7 @@ const defaultSettings: AppSettings = {
   onboarding_completed: false,
   remote_enabled: false,
   theme: "system",
+  openviking: { enabled: false, base_url: "http://localhost:1933", api_key: "" },
   ai: {
     models: [],
     acp_connections: [],

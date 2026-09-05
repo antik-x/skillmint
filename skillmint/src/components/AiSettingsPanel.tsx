@@ -5,6 +5,7 @@ import {
   Brain,
   Check,
   ChevronDown,
+  Database,
   FlaskConical,
   Key,
   Link,
@@ -19,7 +20,15 @@ import { showError, showSuccess } from "../stores/toastStore";
 import { Button } from "./ui/Button";
 import { Card } from "./ui/Card";
 import { HelpTip } from "./ui/HelpTip";
-import type { AiConfig, AiModelConfig, AcpConnectionConfig, AcpTransport, DetectedAgent, LlmRequestLog } from "../types";
+import { Input } from "./ui/Input";
+import type { AiConfig, AiModelConfig, AcpConnectionConfig, AcpTransport, DetectedAgent, LlmRequestLog, OpenVikingConfig } from "../types";
+
+/** P0 探针返回结构（与 Rust `openviking::ProbeResult` 对应）。 */
+interface OvProbeResult {
+  state: "disabled" | "available" | "auth_failed" | "incompatible" | "unreachable";
+  detail: string;
+  capabilities: { path: string; ok: boolean }[];
+}
 
 const PROVIDER_LABELS: Record<string, string> = {
   openai: "OpenAI 兼容",
@@ -78,6 +87,14 @@ export default function AiSettingsPanel() {
   const [testingAcpId, setTestingAcpId] = useState<string | null>(null);
   const [detectedAgents, setDetectedAgents] = useState<DetectedAgent[]>([]);
   const [detectingAgents, setDetectingAgents] = useState(false);
+
+  // P4: OpenViking integration (root-level settings, separate save path).
+  const [ov, setOv] = useState<OpenVikingConfig>(() =>
+    settings.openviking ?? { enabled: false, base_url: "http://localhost:1933", api_key: "" }
+  );
+  const [ovSaving, setOvSaving] = useState(false);
+  const [ovProbing, setOvProbing] = useState(false);
+  const [ovProbe, setOvProbe] = useState<OvProbeResult | null>(null);
 
   useEffect(() => {
     detectAgents();
@@ -223,6 +240,43 @@ export default function AiSettingsPanel() {
     }
   };
 
+  // P4 OpenViking: persist root-level settings, then run the read-only probe.
+  // Probing after save guarantees the backend uses exactly what's on screen.
+  const saveOv = async (): Promise<boolean> => {
+    setOvSaving(true);
+    try {
+      const saved = await invoke<typeof settings>("save_settings", {
+        newSettings: { ...getSettings, openviking: ov },
+      });
+      setSettings(saved);
+      return true;
+    } catch (err) {
+      const message = typeof err === "string" ? err : err instanceof Error ? err.message : String(err);
+      showError(`OpenViking 设置保存失败：${message}`);
+      return false;
+    } finally {
+      setOvSaving(false);
+    }
+  };
+
+  const handleOvSave = async () => {
+    if (await saveOv()) showSuccess("OpenViking 设置已保存（API key 存入钥匙串）");
+  };
+
+  const handleOvProbe = async () => {
+    if (ovProbing) return;
+    if (!(await saveOv())) return;
+    setOvProbing(true);
+    try {
+      setOvProbe(await invoke<OvProbeResult>("openviking_probe"));
+    } catch (err) {
+      const message = typeof err === "string" ? err : err instanceof Error ? err.message : String(err);
+      showError(`探测失败：${message}`);
+    } finally {
+      setOvProbing(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="rounded-xl border border-[var(--border-subtle)] bg-secondary p-6">
@@ -345,6 +399,91 @@ export default function AiSettingsPanel() {
             ))}
           </div>
         )}
+      </Card>
+
+      <Card className="p-0 overflow-hidden" >
+        <div className="flex items-start gap-3 border-b border-[var(--border-subtle)] px-6 py-5">
+          <Database className="mt-0.5 h-5 w-5 text-accent" />
+          <div className="flex-1">
+            <h2 className="text-lg font-semibold text-primary">
+              OpenViking · 外置上下文引擎
+              <span className="ml-2 align-middle text-xs font-normal text-tertiary">可选增强 · P0 只读探针</span>
+            </h2>
+            <p className="mt-1 text-sm text-secondary">
+              连接本机运行的 OpenViking 上下文数据库，为技能查找、关系发现与记忆召回提供语义增强。只增强、不替代——关闭后一切功能照常。
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between border-b border-[var(--border-subtle)] px-6 py-3">
+          <span className="text-sm text-secondary">启用 OpenViking 集成</span>
+          <label className="relative inline-flex cursor-pointer items-center">
+            <input
+              type="checkbox"
+              checked={ov.enabled}
+              onChange={(e) => setOv((p) => ({ ...p, enabled: e.target.checked }))}
+              className="peer sr-only"
+            />
+            <div className="peer h-6 w-11 rounded-full bg-tertiary after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:bg-primary after:transition-all peer-checked:bg-accent peer-checked:after:translate-x-full" />
+          </label>
+        </div>
+
+        <div className="space-y-4 px-6 py-4">
+          <div>
+            <label className="mb-1 block text-sm text-secondary">服务地址</label>
+            <Input
+              value={ov.base_url}
+              onChange={(e) => setOv((p) => ({ ...p, base_url: e.target.value }))}
+              placeholder="http://localhost:1933"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm text-secondary">API Key（Bearer，存入系统钥匙串）</label>
+            <Input
+              type="password"
+              value={ov.api_key ?? ""}
+              onChange={(e) => setOv((p) => ({ ...p, api_key: e.target.value }))}
+              placeholder="ov-…"
+            />
+          </div>
+          <p className="text-xs text-tertiary">
+            门控为双开关：需同时打开「偏好设置 → 远程功能」与上方开关，才会发出任何请求（包括 localhost）。
+            注意：OpenViking 本地存储 ≠ 完全离线——其 embedding/VLM 可能经火山引擎 Ark 出网，P0 探针仅访问只读接口。
+          </p>
+          <div className="flex items-center gap-3">
+            <Button variant="secondary" size="sm" onClick={handleOvSave} loading={ovSaving} disabled={ovSaving}>
+              保存 OpenViking 设置
+            </Button>
+            <Button variant="primary" size="sm" onClick={handleOvProbe} loading={ovProbing} disabled={ovProbing}>
+              探测连通性
+            </Button>
+          </div>
+          {ovProbe && (
+            <div
+              className="rounded-lg border border-[var(--border-subtle)] bg-secondary p-4 text-sm"
+              data-testid="ov-probe-result"
+            >
+              <p className="font-medium">
+                状态：
+                {ovProbe.state === "available" && <span className="text-green-600">可用</span>}
+                {ovProbe.state === "disabled" && <span className="text-secondary">未启用</span>}
+                {ovProbe.state === "auth_failed" && <span className="text-red-600">认证失败</span>}
+                {ovProbe.state === "incompatible" && <span className="text-amber">版本不兼容</span>}
+                {ovProbe.state === "unreachable" && <span className="text-amber">无法连接</span>}
+              </p>
+              <p className="mt-1 text-xs text-secondary">{ovProbe.detail}</p>
+              {ovProbe.capabilities.length > 0 && (
+                <ul className="mt-2 space-y-1 text-xs text-tertiary font-mono">
+                  {ovProbe.capabilities.map((c) => (
+                    <li key={c.path}>
+                      {c.ok ? "✓" : "✗"} {c.path}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
       </Card>
 
       <PrivacyCard

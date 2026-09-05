@@ -64,6 +64,7 @@ fn state_to_model(settings: &Settings) -> AppSettings {
         proxy_env: settings.proxy_env.clone(),
         disable_telemetry: settings.disable_telemetry,
         node_path_override: settings.node_path_override.clone(),
+        openviking: settings.openviking.clone(),
     }
 }
 
@@ -962,6 +963,9 @@ pub fn save_settings(
     settings.proxy_env = new_settings.proxy_env;
     settings.disable_telemetry = new_settings.disable_telemetry;
     settings.node_path_override = new_settings.node_path_override;
+    // P4 OpenViking: keep the user-supplied key in memory (UI echoes it back);
+    // settings.save() below persists it to the keyring, never to settings.json.
+    settings.openviking = new_settings.openviking;
     // device_id is server-owned and read-only here: ignore whatever the frontend sent.
 
     settings.save(&app_dir).map_err(|e| e.to_string())?;
@@ -1520,6 +1524,21 @@ static DISCOVERY_RUNNING: OnceLock<Mutex<bool>> = OnceLock::new();
 
 fn discovery_running() -> &'static Mutex<bool> {
     DISCOVERY_RUNNING.get_or_init(|| Mutex::new(false))
+}
+
+/// P4: OpenViking read-only probe (gated behind remote_enabled AND
+/// openviking.enabled; zero requests when either is off). See
+/// `docs/openviking-integration.md`.
+#[tauri::command]
+pub fn openviking_probe(state: State<'_, AppState>) -> Result<crate::openviking::ProbeResult, String> {
+    let (remote_enabled, ov_cfg) = {
+        let settings = state.settings.lock().map_err(|e| e.to_string())?;
+        (
+            settings.remote_enabled,
+            settings.openviking.clone(),
+        )
+    };
+    Ok(crate::openviking::probe_gated(remote_enabled, &ov_cfg))
 }
 
 /// Run the discovery pipeline now. Serialized via a static Mutex so repeated

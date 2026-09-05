@@ -160,6 +160,10 @@ pub struct Settings {
     /// minimal PATH; this overrides the auto-discovery chain.
     #[serde(default)]
     pub node_path_override: String,
+    /// P4: OpenViking context-database integration (default off; see
+    /// `docs/openviking-integration.md`). `api_key` lives in the keyring.
+    #[serde(default)]
+    pub openviking: OpenVikingConfig,
 }
 
 /// One configured LLM endpoint. Supports chat and/or embedding capabilities.
@@ -336,6 +340,65 @@ impl AiConfig {
     }
 }
 
+/// OpenViking context-database integration (P0, read-only probe). See
+/// `docs/openviking-integration.md`. Enhancement only — never a hard dependency.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenVikingConfig {
+    /// Independent opt-in switch on top of `remote_enabled`. Both must be on
+    /// before any request (even to localhost) is attempted.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Base URL of the local OpenViking HTTP server.
+    #[serde(default = "default_openviking_base_url")]
+    pub base_url: String,
+    /// Bearer API key. Stored in the keyring, never in settings.json.
+    #[serde(default, skip_serializing)]
+    pub api_key: String,
+}
+
+impl Default for OpenVikingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: default_openviking_base_url(),
+            api_key: String::new(),
+        }
+    }
+}
+
+fn default_openviking_base_url() -> String {
+    "http://localhost:1933".to_string()
+}
+
+impl OpenVikingConfig {
+    const KEYRING_USERNAME: &'static str = "openviking";
+
+    /// Read the Bearer key from the keyring into memory.
+    pub fn load_key(&mut self) {
+        self.api_key = match keyring::Entry::new(KEYRING_SERVICE, Self::KEYRING_USERNAME) {
+            Ok(entry) => entry.get_password().unwrap_or_default(),
+            Err(e) => {
+                eprintln!("[keyring] failed to open OpenViking entry: {}", e);
+                String::new()
+            }
+        };
+    }
+
+    /// Persist the Bearer key to the keyring and clear it from memory so it
+    /// never reaches settings.json.
+    pub fn persist_key_and_sanitize(&mut self) {
+        if self.api_key.trim().is_empty() {
+            let _ = keyring::Entry::new(KEYRING_SERVICE, Self::KEYRING_USERNAME)
+                .and_then(|e| e.delete_credential());
+        } else if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, Self::KEYRING_USERNAME) {
+            if let Err(e) = entry.set_password(&self.api_key) {
+                eprintln!("[keyring] failed to store OpenViking key: {}", e);
+            }
+        }
+        self.api_key.clear();
+    }
+}
+
 fn default_project_skill_dir() -> String {
     ".skillmint/skills".to_string()
 }
@@ -403,6 +466,7 @@ impl Default for Settings {
             proxy_env: String::new(),
             disable_telemetry: default_true(),
             node_path_override: String::new(),
+            openviking: OpenVikingConfig::default(),
         }
     }
 }
@@ -447,6 +511,7 @@ impl Settings {
 
         // Load keys for all models from the keyring into memory.
         settings.ai.load_keys();
+        settings.openviking.load_key();
 
         // Always persist on first run or when we regenerated the device_id.
         if dirty || !path.exists() {
@@ -462,6 +527,7 @@ impl Settings {
         // Persist keys and ensure in-memory api_keys never reach the disk file.
         let mut sanitized = self.clone();
         sanitized.ai.persist_keys_and_sanitize();
+        sanitized.openviking.persist_key_and_sanitize();
         let content = serde_json::to_string_pretty(&sanitized)?;
         std::fs::write(&path, content)?;
         Ok(())
