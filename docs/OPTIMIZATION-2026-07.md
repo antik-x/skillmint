@@ -200,6 +200,15 @@
 - 删除孤儿组件（前端）：SkillEditor / VersionPanel / ImportSkillModal；Projects 页重写为纯使用洞察页（安装/版本/一致性 UI 移除）；`backup_center_repo` 从任务表单选项移除（后端任务类型保留，DB 已有种子行）；
 - 删除死代码：`resolve_diff_core` 相关版本 core、`move_into_center`、`run_startup_consistency_check`、`SkillVersion`/`RollbackResult`/`SkillContent`/`RepoIntegrity`（后者保留为 repair 测试 oracle，标 allow）、`InstallRemoteResult` 模型；`init_app` 的 center repo 引导与迁移剥离；
 - trash 恢复/清除机制保留（TrashPanel 仍在用），其测试改用本地夹具播种回收站；
+### P3-9 真机启动修复 ✅ (2026-09-05)
+
+用户真机报告：启动卡在「正在初始化...」且界面不美观。三层根因，全部修复并真机（`open -a SkillMint` + 截图）验证通过：
+1. **启动挂死**：appStore.loadData 仍调用已在 P3-8 删除的 `get_sync_targets` 命令 → init 链 reject → 永远停在启动页。调用链已删，且 init 改为 fail-open（任何初始化失败只 toast，必定进入主界面）。
+2. **落到 Onboarding + 默认设置**（第二层，靠界面内嵌错误横幅取证）：`init_app` 在真实库上报 `FOREIGN KEY constraint failed`——`insert_agent` 用 `INSERT OR REPLACE`（SQLite 语义 = 先 DELETE 父行），`agent_instances`/`sync_targets` 子行存在时每次启动必炸。改为 `ON CONFLICT DO UPDATE` 真 upsert；`delete_agent` 先清子表（sync_targets/agent_directory_skills/agent_directories/agent_instances，bindings 置 NULL）；`scan_and_persist_agents`/`link_sessions_to_projects` 降级为非致命步骤。
+3. **启动页重设计**：logo 徽标 + 不定进度条取代空白骨架块；init 失败信息以红色横幅持久显示在启动页/引导页（不再静默吞掉）。
+
+教训：此前只跑了 cargo/vitest + bundle 断言，没有真机启动过——「构建安装成功」≠「能进主界面」。此后每次 build-install 都应 `open` 一次并确认越过启动页。
+
 ### P3-8 多角色审查修复 ✅ (2026-09-05)
 
 虚拟五类用户（新装机/CLI 老手/团队协作/国内网络/老版本升级）走查后修复：

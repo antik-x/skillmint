@@ -3,8 +3,20 @@ use super::*;
 impl Db {
     // Agents
     pub fn insert_agent(&self, agent: &Agent) -> Result<()> {
+        // P3 startup fix: INSERT OR REPLACE performs a DELETE + INSERT on the
+        // parent row, which violates the agent_instances / sync_targets FKs on
+        // real installs (every startup touch turned into a constraint error).
+        // A true upsert keeps the row and its children in place.
         self.conn.execute(
-            "INSERT OR REPLACE INTO agents (id, name, skill_directory, is_enabled, discovery_rule, description, source) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO agents (id, name, skill_directory, is_enabled, discovery_rule, description, source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(id) DO UPDATE SET
+               name = excluded.name,
+               skill_directory = excluded.skill_directory,
+               is_enabled = excluded.is_enabled,
+               discovery_rule = excluded.discovery_rule,
+               description = excluded.description,
+               source = excluded.source",
             params![agent.id, agent.name, agent.skill_directory.to_string_lossy().to_string(), agent.is_enabled as i32, agent.discovery_rule, agent.description, agent.source],
         )?;
         Ok(())
@@ -234,8 +246,18 @@ impl Db {
     }
 
     pub fn delete_agent(&self, id: &str) -> Result<()> {
+        // P3 startup fix: child rows must go (or detach) before the parent, or
+        // the FK constraint aborts the whole startup scan.
         self.conn
             .execute("DELETE FROM sync_targets WHERE agent_id = ?1", params![id])?;
+        self.conn
+            .execute("DELETE FROM agent_directory_skills WHERE agent_id = ?1", params![id])?;
+        self.conn
+            .execute("DELETE FROM agent_directories WHERE agent_id = ?1", params![id])?;
+        self.conn
+            .execute("DELETE FROM agent_instances WHERE agent_id = ?1", params![id])?;
+        self.conn
+            .execute("UPDATE skill_project_bindings SET agent_id = NULL WHERE agent_id = ?1", params![id])?;
         self.conn
             .execute("DELETE FROM agents WHERE id = ?1", params![id])?;
         Ok(())

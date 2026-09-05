@@ -40,6 +40,8 @@ function App() {
   // I3: command palette + shortcuts help overlay.
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  // TEMP DEBUG: surface init failures visibly (remove after diagnosis).
+  const [initError, setInitError] = useState<string | null>(null);
 
   const togglePalette = useCallback(() => setPaletteOpen((v) => !v), []);
   const openHelp = useCallback(() => setHelpOpen(true), []);
@@ -66,6 +68,8 @@ function App() {
       })
       .catch((err) => {
         console.error("[SkillMint] init failed:", err);
+        const raw = err as Error & { detail?: string };
+        setInitError([raw.message, raw.detail].filter(Boolean).join(" | ") || String(err));
         showError(humanizeError(err, { context: "初始化" }));
       })
       .finally(() => {
@@ -153,12 +157,17 @@ function App() {
   }, [loadData, setActiveTab, setSelectedSkillName]);
 
   if (!initialized) {
-    return <BootSplash />;
+    return <BootSplash initError={initError} />;
   }
 
   if (!settings.onboarding_completed) {
     return (
       <div className="h-full">
+        {initError && (
+          <div className="m-4 rounded border border-danger/30 bg-danger/10 p-3 text-xs text-danger">
+            初始化出现问题（功能受限，可继续使用）：{initError}
+          </div>
+        )}
         <Suspense fallback={<FullPageSkeleton />}>
           <Onboarding />
         </Suspense>
@@ -202,7 +211,7 @@ function App() {
   );
 }
 
-function BootSplash() {
+function BootSplash({ initError }: { initError: string | null }) {
   return (
     <div className="flex h-full select-none flex-col items-center justify-center gap-7 bg-primary">
       <div className="flex items-center gap-3">
@@ -215,6 +224,9 @@ function BootSplash() {
         <div className="animate-boot-bar h-full w-1/3 rounded-full bg-accent" />
       </div>
       <p className="text-xs tracking-wide text-tertiary">正在初始化…</p>
+      {initError && (
+        <p className="max-w-xl rounded border border-danger/30 bg-danger/10 p-2 text-xs text-danger">{initError}</p>
+      )}
     </div>
   );
 }

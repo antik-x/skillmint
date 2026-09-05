@@ -87,7 +87,12 @@ pub fn init_app(state: State<'_, AppState>) -> Result<(), String> {
         }
         Err(e) => eprintln!("[migrate] startup migration failed: {}", e),
     }
-    scan_and_persist_agents(&db).map_err(|e| e.to_string())?;
+    // P3 startup hardening: maintenance steps are best-effort — a failure here
+    // must never reject the whole init chain (it used to force the app into the
+    // onboarding path with default settings).
+    if let Err(e) = scan_and_persist_agents(&db) {
+        eprintln!("[init] agent scan failed (non-fatal): {e}");
+    }
     // Issue #1 data cleanup: older builds persisted one row per (name, source)
     // so the same directory accrued many duplicate agent rows (e.g. dozens of
     // "Agent" rows at ~/.skillmint/skills). Remove the leftovers now that
@@ -106,7 +111,9 @@ pub fn init_app(state: State<'_, AppState>) -> Result<(), String> {
     // P2-3: seed the built-in official example source on first run.
     let _ = db.ensure_official_example_source(&center_repo);
     drop(settings);
-    db.link_sessions_to_projects(&device_id).map_err(|e| e.to_string())?;
+    if let Err(e) = db.link_sessions_to_projects(&device_id) {
+        eprintln!("[init] session link failed (non-fatal): {e}");
+    }
     Ok(())
 }
 
