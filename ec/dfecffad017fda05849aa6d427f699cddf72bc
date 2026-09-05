@@ -1,0 +1,18 @@
+skillmint/src-tauri/src/analyzer.rs
+  h_04c00a69eeb820 100-102,109-114,148-227
+skillmint/src-tauri/src/tests.rs
+  h_04c00a69eeb820 5338-5405
+skillmint/src/pages/Inbox.tsx
+  h_04c00a69eeb820 111-112,116-148,459,461-468,476-489
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.6.24",
+  "base_commit_sha": "ecdfecffad017fda05849aa6d427f699cddf72bc",
+  "prompts": {},
+  "humans": {
+    "h_04c00a69eeb820": {
+      "author": "antik-x <jianyong.me@gmail.com>"
+    }
+  }
+}
