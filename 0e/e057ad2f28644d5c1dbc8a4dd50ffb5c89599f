@@ -1,0 +1,18 @@
+skillmint/src/App.css
+  h_04c00a69eeb820 81-89
+skillmint/src/App.tsx
+  h_04c00a69eeb820 7,59-61,70-77,156,205-221
+skillmint/src/stores/appStore.ts
+  h_04c00a69eeb820 3,204-206,210
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.6.24",
+  "base_commit_sha": "0ee057ad2f28644d5c1dbc8a4dd50ffb5c89599f",
+  "prompts": {},
+  "humans": {
+    "h_04c00a69eeb820": {
+      "author": "antik-x <jianyong.me@gmail.com>"
+    }
+  }
+}
