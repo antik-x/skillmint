@@ -97,14 +97,19 @@ pub enum Outcome {
 }
 
 /// Generate (and persist) the daily summary for `date` (YYYY-MM-DD).
+///
+/// 验收口径「规则版打底、AI 增强」（docs/product-epics.md）：未配置 AI 时走本地
+/// 模板汇总（绝不因缺模型而停转），配置后走 LLM 生成版。
 pub fn generate_daily_summary(db: &Db, date: &str, cfg: &AiConfig) -> anyhow::Result<Outcome> {
-    if !llm::is_configured(cfg) {
-        return Ok(Outcome::NoKey);
-    }
-
     let sessions = db.query_sessions_for_day(date)?;
     if sessions.is_empty() {
         return Ok(Outcome::NoSessions);
+    }
+
+    if !llm::is_configured(cfg) {
+        let summary = template_daily_summary(date, &sessions);
+        db.save_daily_summary(date, &summary, "规则版")?;
+        return Ok(Outcome::Generated { summary });
     }
 
     let context = build_context_text(&sessions);
@@ -138,6 +143,86 @@ pub fn generate_daily_summary(db: &Db, date: &str, cfg: &AiConfig) -> anyhow::Re
         .unwrap_or("");
     db.save_daily_summary(date, &summary, model_name)?;
     Ok(Outcome::Generated { summary })
+}
+
+/// 规则版每日摘要：纯本地统计（无 AI、零网络）。把当天会话按项目聚类，
+/// 产出与 LLM 版相同的 `DailySummary` 结构，持久化路径一致。
+pub fn template_daily_summary(date: &str, sessions: &[DaySession]) -> DailySummary {
+    let total_msgs: i64 = sessions.iter().map(|s| s.message_count).sum();
+
+    // Group by project (fall back to the collector source when a session has
+    // no project path, e.g. ad-hoc CLI work).
+    let mut groups: std::collections::BTreeMap<String, Vec<&DaySession>> =
+        std::collections::BTreeMap::new();
+    for s in sessions {
+        let key = match &s.project_path {
+            Some(p) if !p.trim().is_empty() => {
+                std::path::Path::new(p)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| p.clone())
+            }
+            _ => format!("（{} 直连会话）", s.source),
+        };
+        groups.entry(key).or_default().push(s);
+    }
+
+    let mut grouped: Vec<(usize, ActivityItem)> = groups
+        .into_iter()
+        .map(|(project, group)| {
+            let msgs: i64 = group.iter().map(|s| s.message_count).sum();
+            let mut details: Vec<String> = group
+                .iter()
+                .filter_map(|s| s.title_or_prompt.as_deref())
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .take(3)
+                .collect();
+            if details.is_empty() {
+                details.push("（会话无标题记录）".to_string());
+            }
+            let item = ActivityItem {
+                time_range: String::new(),
+                project: project.clone(),
+                category: "项目协作".to_string(),
+                summary: format!("{} 场会话 · {} 条消息", group.len(), msgs),
+                details,
+            };
+            (group.len(), item)
+        })
+        .collect();
+    // Most active project first.
+    grouped.sort_by(|a, b| b.0.cmp(&a.0));
+    let activities: Vec<ActivityItem> = grouped.into_iter().map(|(_, item)| item).collect();
+
+    let sources: std::collections::BTreeSet<&str> =
+        sessions.iter().map(|s| s.source.as_str()).collect();
+    let highlights = vec![
+        format!(
+            "当天共 {} 场会话 · {} 条消息，覆盖 {} 个工具/Agent",
+            sessions.len(),
+            total_msgs,
+            sources.len()
+        ),
+        format!(
+            "最活跃项目：{}（{}）",
+            activities
+                .first()
+                .map(|a| a.project.as_str())
+                .unwrap_or("无"),
+            activities
+                .first()
+                .map(|a| a.summary.as_str())
+                .unwrap_or("")
+        ),
+        "（规则版汇总 · 配置 AI 模型后可升级为生成版）".to_string(),
+    ];
+
+    DailySummary {
+        date: date.to_string(),
+        highlights,
+        activities,
+    }
 }
 
 /// One day's session, in the shape needed to build the LLM context. Mirrors

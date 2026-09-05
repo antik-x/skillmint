@@ -5335,3 +5335,71 @@ fn test_project_link_hygiene_migration_cleans_and_rebuilds() {
         .unwrap();
     assert_eq!(stale, 0, "stale instance rows are wiped by the rebuild");
 }
+
+#[test]
+fn test_daily_summary_rule_path_generates_without_llm() {
+    // 验收口径「规则版打底」：未配置 AI 时 generate_daily_summary 必须仍能
+    // 产出并持久化一份规则版摘要（S2.4.1），而不是返回 NoKey。
+    let (_tmp, db, _settings) = setup_test_env();
+
+    use chrono::TimeZone;
+    let now_local = chrono::Local::now();
+    let date = now_local.format("%Y-%m-%d").to_string();
+    let base = now_local.date_naive().and_hms_opt(9, 0, 0).unwrap();
+    let base_secs = chrono::Local
+        .from_local_datetime(&base)
+        .single()
+        .unwrap()
+        .timestamp();
+
+    let conn = db.conn();
+    for (i, (title, proj, msgs)) in [
+        ("refactor auth module", Some("/Users/x/demo"), 12),
+        ("fix nav regression", Some("/Users/x/demo"), 8),
+        ("scratch session", None, 3),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        conn.execute(
+            "INSERT INTO collected_sessions
+             (id, device_id, source, project_path, start_time, message_count, title_or_prompt, cached_at)
+             VALUES (?1, 'd1', 'zcode', ?2, ?3, ?4, ?5, ?3)",
+            rusqlite::params![
+                format!("rule-s{}", i),
+                proj,
+                base_secs + i as i64 * 600,
+                msgs,
+                title
+            ],
+        )
+        .unwrap();
+    }
+
+    let cfg = crate::settings::AiConfig::default();
+    let outcome = crate::analyzer::generate_daily_summary(&db, &date, &cfg).unwrap();
+    let summary = match outcome {
+        crate::analyzer::Outcome::Generated { summary } => summary,
+        other => panic!("expected Generated (rule path), got {:?}", other),
+    };
+    assert_eq!(summary.date, date);
+    assert!(!summary.highlights.is_empty(), "rule summary has highlights");
+    assert_eq!(
+        summary.activities.len(),
+        2,
+        "demo project group + direct-session group"
+    );
+    assert_eq!(
+        summary.activities[0].project, "demo",
+        "most active project sorts first"
+    );
+    assert!(
+        summary.activities[0].summary.contains("2 场会话"),
+        "activity summary counts sessions: {}",
+        summary.activities[0].summary
+    );
+
+    let persisted = db.get_daily_summary(&date).unwrap().expect("persisted row");
+    assert_eq!(persisted.highlights, summary.highlights);
+    assert_eq!(persisted.activities.len(), summary.activities.len());
+}

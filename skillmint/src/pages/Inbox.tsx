@@ -108,8 +108,43 @@ export default function Inbox() {
   // SPEC-C2 T4: low-confidence tab.
   const [activeTab, setActiveTabInbox] = useState<"pending" | "lowConfidence">("pending");
   const [lowConfItems, setLowConfItems] = useState<GateRejection[] | null>(null);
+  // E3: manual discovery-pipeline trigger (rule-based; LLM is optional enhancement).
+  const [runningPipeline, setRunningPipeline] = useState(false);
 
   useHotkeyScope("inbox");
+
+  const refreshPending = useCallback(() => {
+    return invoke<Discovery[]>("list_discoveries", { status: "pending" })
+      .then((rows) => {
+        const pending = rows
+          .filter((r) => r.status === "pending")
+          .sort((a, b) => a.created_at - b.created_at);
+        setItems(pending);
+        setCurrentIndex(0);
+      })
+      .catch(() => setItems([]));
+  }, []);
+
+  const handleRunPipeline = async () => {
+    if (runningPipeline) return;
+    setRunningPipeline(true);
+    try {
+      const result = await invoke<{ inserted: number; expired: number }>(
+        "run_discovery_pipeline"
+      );
+      await refreshPending();
+      bumpInboxRefresh();
+      if (result.inserted > 0) {
+        showSuccess(`发现管线完成：新增 ${result.inserted} 条发现`);
+      } else {
+        showInfo("发现管线完成：暂无新的发现（数据不足或均已在箱）");
+      }
+    } catch (err) {
+      showError(humanizeError(err, { context: "运行发现管线" }));
+    } finally {
+      setRunningPipeline(false);
+    }
+  };
 
   // Load pending discoveries once on mount.
   useEffect(() => {
@@ -421,8 +456,16 @@ export default function Inbox() {
               <span className="font-mono text-accent">{decisions.acceptedEdited}</span> · 拒绝{" "}
               <span className="font-mono text-secondary">{decisions.dismissed}</span>
             </p>
-            <div className="mt-5">
+            <div className="mt-5 flex items-center justify-center gap-2">
               <Button variant="secondary" size="sm" onClick={goToday}>回今天页</Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={runningPipeline}
+                onClick={handleRunPipeline}
+              >
+                {runningPipeline ? "运行中…" : "再跑一次发现"}
+              </Button>
             </div>
           </Card>
         ) : (
@@ -430,8 +473,20 @@ export default function Inbox() {
             icon={InboxIcon}
             illustration="inbox"
             title="收件箱"
-            description="这里以后会放 AI 帮你挑出的每日发现：值得复用的提问方式、你反复在做的事、Skill 的实际效果。每天采集完成后自动送达，你只需决定收下或忽略。"
-            action={<Button variant="secondary" size="sm" onClick={goToday}>回今天页</Button>}
+            description="每天采集完成后，发现管线会把值得复用的提问方式、你反复在做的事、Skill 的实际效果送进这里；你只需决定收下或忽略。也可以现在手动跑一次（规则版，无需 AI）。"
+            action={
+              <div className="flex items-center justify-center gap-2">
+                <Button variant="secondary" size="sm" onClick={goToday}>回今天页</Button>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  disabled={runningPipeline}
+                  onClick={handleRunPipeline}
+                >
+                  {runningPipeline ? "运行中…" : "立即运行发现"}
+                </Button>
+              </div>
+            }
           />
         )}
       </div>
