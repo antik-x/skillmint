@@ -4,6 +4,7 @@ import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import Sidebar from "./components/Sidebar";
 import ToastContainer from "./components/ToastContainer";
 import { PageTransition } from "./components/PageTransition";
+import { Sprout } from "lucide-react";
 import { SkeletonCard } from "./components/ui/Skeleton";
 import { useAppStore } from "./stores/appStore";
 import { humanizeError, showError, showSuccess } from "./stores/toastStore";
@@ -55,16 +56,25 @@ function App() {
   }, [settings.theme]);
 
   useEffect(() => {
+    // P3 startup hardening: a failure in ANY init step must never leave the
+    // window on the splash forever. Core settings still gate the stores; a
+    // loadData failure degrades to toasts inside the main UI instead.
     invoke("init_app")
       .then(() => invoke<typeof settings>("get_settings"))
       .then((savedSettings) => {
         setSettings(savedSettings);
-        return loadData();
       })
-      .then(() => setInitialized(true))
       .catch((err) => {
         console.error("[SkillMint] init failed:", err);
         showError(humanizeError(err, { context: "初始化" }));
+      })
+      .finally(() => {
+        loadData()
+          .catch((err) => {
+            console.error("[SkillMint] initial load failed:", err);
+            showError(humanizeError(err, { context: "初始加载" }));
+          })
+          .finally(() => setInitialized(true));
       });
   }, [loadData, setInitialized, setSettings]);
 
@@ -143,15 +153,7 @@ function App() {
   }, [loadData, setActiveTab, setSelectedSkillName]);
 
   if (!initialized) {
-    return (
-      <div className="flex h-full items-center justify-center bg-primary">
-        <div className="w-64 space-y-4 text-center">
-          <div className="mb-4 text-2xl font-bold tracking-tight text-primary">SkillMint</div>
-          <SkeletonCard className="animate-pulse" />
-          <p className="text-sm text-secondary">正在初始化...</p>
-        </div>
-      </div>
-    );
+    return <BootSplash />;
   }
 
   if (!settings.onboarding_completed) {
@@ -196,6 +198,23 @@ function App() {
       <GlobalShortcuts onTogglePalette={togglePalette} onOpenHelp={openHelp} />
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
       <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
+    </div>
+  );
+}
+
+function BootSplash() {
+  return (
+    <div className="flex h-full select-none flex-col items-center justify-center gap-7 bg-primary">
+      <div className="flex items-center gap-3">
+        <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-accent shadow-lg shadow-accent/30">
+          <Sprout className="h-6 w-6 text-white" strokeWidth={2.2} />
+        </div>
+        <span className="text-3xl font-bold tracking-tight text-primary">SkillMint</span>
+      </div>
+      <div className="h-1 w-52 overflow-hidden rounded-full bg-tertiary">
+        <div className="animate-boot-bar h-full w-1/3 rounded-full bg-accent" />
+      </div>
+      <p className="text-xs tracking-wide text-tertiary">正在初始化…</p>
     </div>
   );
 }

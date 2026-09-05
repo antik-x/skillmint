@@ -78,3 +78,12 @@
 .toast-enter {
   animation: toast-in 250ms cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
 }
+
+/* Boot splash indeterminate progress bar. */
+@keyframes boot-bar {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(420%); }
+}
+.animate-boot-bar {
+  animation: boot-bar 1.3s ease-in-out infinite;
+}

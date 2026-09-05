@@ -47,7 +47,6 @@ describe("App deep-link / tray 路由", () => {
       activeTab: "today",
       skills: [],
       agents: [],
-      syncTargets: [],
       settings: settingsObj,
     });
     vi.mocked(invoke).mockImplementation((cmd: string) => {
@@ -58,7 +57,6 @@ describe("App deep-link / tray 路由", () => {
         [
           "get_skills",
           "get_agents",
-          "get_sync_targets",
           "list_discoveries",
           "get_skill_usage",
           "list_daily_summaries",

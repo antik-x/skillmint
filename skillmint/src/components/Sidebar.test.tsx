@@ -15,7 +15,6 @@ function resetStore() {
     activeTab: "today",
     sidebarVisible: true,
     agents: [],
-    syncTargets: [],
     skills: [],
   });
 }

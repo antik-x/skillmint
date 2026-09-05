@@ -74,8 +74,6 @@ function SidebarComponent() {
   const setActiveTab = useAppStore((state) => state.setActiveTab);
   const sidebarVisible = useAppStore((state) => state.sidebarVisible);
   const inboxRefreshKey = useAppStore((state) => state.inboxRefreshKey);
-  const syncTargets = useAppStore((state) => state.syncTargets);
-  const conflictCount = syncTargets.filter((t) => t.status === "conflict").length;
   const [pendingCount, setPendingCount] = useState<number | null>(null);
 
   useEffect(() => {
@@ -121,7 +119,6 @@ function SidebarComponent() {
                   (item.id === "knowledgeGraph" && activeTab === "skillLibrary" && skillLibrarySubTab === "graph") ||
                   (item.id === "discover" && activeTab === "skillLibrary" && skillLibrarySubTab === "discover");
                 const showAmberBadge = item.id === "inbox" && typeof pendingCount === "number" && pendingCount > 0;
-                const showConflictBadge = item.id === "today" && conflictCount > 0;
                 return (
                   <button
                     key={item.id}
@@ -143,11 +140,6 @@ function SidebarComponent() {
                     {showAmberBadge && (
                       <span className="ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-dim px-1.5 text-2xs font-medium text-amber font-mono">
                         {pendingCount > 99 ? "99+" : pendingCount}
-                      </span>
-                    )}
-                    {showConflictBadge && (
-                      <span className="ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-danger px-1.5 text-2xs font-semibold text-white font-mono">
-                        {conflictCount > 99 ? "99+" : conflictCount}
                       </span>
                     )}
                   </button>

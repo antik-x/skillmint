@@ -21,7 +21,6 @@ function resetStore() {
     initialized: true,
     activeTab: "today",
     agents: [{ id: "a1", name: "claude-code", skill_directory: "/x", is_enabled: true, source: "claude-code" }],
-    syncTargets: [],
     settings: {
       device_id: "",
       auto_sync_interval_minutes: 0,

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import type { Skill, Agent, SyncTarget, AppSettings } from "../types";
+import type { Skill, Agent, AppSettings } from "../types";
 
 /** 重构后的顶层入口，符合 SPEC-I4 信息架构。 */
 export type AppTab =
@@ -50,7 +50,6 @@ interface AppState {
   inboxRefreshKey: number;
   skills: Skill[];
   agents: Agent[];
-  syncTargets: SyncTarget[];
   settings: AppSettings;
   setInitialized: (value: boolean) => void;
   setActiveTab: (tab: AppState["activeTab"]) => void;
@@ -69,7 +68,6 @@ interface AppState {
   bumpInboxRefresh: () => void;
   setSkills: (skills: Skill[]) => void;
   setAgents: (agents: Agent[]) => void;
-  setSyncTargets: (targets: SyncTarget[]) => void;
   setSettings: (settings: AppSettings) => void;
   loadData: () => Promise<void>;
 }
@@ -153,7 +151,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   inboxRefreshKey: 0,
   skills: [],
   agents: [],
-  syncTargets: [],
   settings: defaultSettings,
   setInitialized: (value) => set({ initialized: value }),
   setActiveTab: (tab) => {
@@ -202,14 +199,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   bumpInboxRefresh: () => set((state) => ({ inboxRefreshKey: state.inboxRefreshKey + 1 })),
   setSkills: (skills) => set({ skills }),
   setAgents: (agents) => set({ agents }),
-  setSyncTargets: (targets) => set({ syncTargets: targets }),
   setSettings: (settings) => set({ settings }),
   loadData: async () => {
-    const [skills, agents, syncTargets] = await Promise.all([
+    // P3 startup fix: get_sync_targets no longer exists as a command — calling
+    // it here rejected the whole init chain and left the app on the splash.
+    const [skills, agents] = await Promise.all([
       invoke<Skill[]>("get_skills"),
       invoke<Agent[]>("get_agents"),
-      invoke<SyncTarget[]>("get_sync_targets"),
     ]);
-    set({ skills, agents, syncTargets });
+    set({ skills, agents });
   },
 }));
