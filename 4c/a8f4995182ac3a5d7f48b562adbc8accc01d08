@@ -1,0 +1,30 @@
+docs/openviking-integration.md
+  h_04c00a69eeb820 327-343
+skillmint/src-tauri/src/commands/mod.rs
+  h_04c00a69eeb820 67,966-968,1529-1543
+skillmint/src-tauri/src/lib.rs
+  h_04c00a69eeb820 27,542
+skillmint/src-tauri/src/models.rs
+  h_04c00a69eeb820 150-152
+skillmint/src-tauri/src/openviking.rs
+  h_04c00a69eeb820 1-221
+skillmint/src-tauri/src/settings.rs
+  h_04c00a69eeb820 163-166,343-401,469,514,530
+skillmint/src/components/AiSettingsPanel.tsx
+  h_04c00a69eeb820 8,23-31,91-98,243-279,404-488
+skillmint/src/stores/appStore.ts
+  h_04c00a69eeb820 116
+skillmint/src/types/index.ts
+  h_04c00a69eeb820 174-185
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.6.24",
+  "base_commit_sha": "4ca8f4995182ac3a5d7f48b562adbc8accc01d08",
+  "prompts": {},
+  "humans": {
+    "h_04c00a69eeb820": {
+      "author": "antik-x <jianyong.me@gmail.com>"
+    }
+  }
+}
