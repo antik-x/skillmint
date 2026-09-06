@@ -1756,12 +1756,12 @@ pub fn generate_weekly_report(
     state: State<'_, AppState>,
 ) -> Result<WeeklyReport, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    let cfg = {
+    let (device_id, cfg) = {
         let settings = state.settings.lock().map_err(|e| e.to_string())?;
-        settings.ai.clone()
+        (settings.device_id.clone(), settings.ai.clone())
     };
     let week = week.unwrap_or_else(crate::discovery::this_monday_utc);
-    crate::discovery::generate_weekly_report(&db, "", &cfg, &week).map_err(|e| e.to_string())
+    crate::discovery::generate_weekly_report(&db, &device_id, &cfg, &week).map_err(|e| e.to_string())
 }
 
 /// Read a generated weekly report.

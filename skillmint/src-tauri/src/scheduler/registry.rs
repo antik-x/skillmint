@@ -241,12 +241,12 @@ pub fn build_registry() -> HashMap<TaskKind, TaskExecutor> {
         TaskKind::GenerateWeeklyReport,
         Arc::new(|state| {
             let db = state.db.lock().map_err(|e| e.to_string())?;
-            let cfg = {
+            let (device_id, cfg) = {
                 let settings = state.settings.lock().map_err(|e| e.to_string())?;
-                settings.ai.clone()
+                (settings.device_id.clone(), settings.ai.clone())
             };
             let week = crate::discovery::this_monday_utc();
-            let report = crate::discovery::generate_weekly_report(&db, "", &cfg, &week)
+            let report = crate::discovery::generate_weekly_report(&db, &device_id, &cfg, &week)
                 .map_err(|e| e.to_string())?;
             Ok(format!("已生成 {} 周报", report.week_start))
         }),

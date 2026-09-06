@@ -406,7 +406,9 @@ fn template_weekly_report(
     let start = parse_week_start(week_start);
     let end = start + config::WEEKLY_REPORT_WINDOW_DAYS * 86400;
 
-    let projects = match db.get_project_usage_summary(device_id, 7, start as u64) {
+    // Pass `end` as the "now" anchor so the 7-day cutoff lands exactly on the
+    // week start (get_project_usage_summary computes cutoff = now - days*86400).
+    let projects = match db.get_project_usage_summary(device_id, 7, end as u64) {
         Ok(list) => list
             .into_iter()
             .take(5)
