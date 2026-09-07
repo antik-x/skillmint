@@ -20,13 +20,13 @@ pub fn build_registry() -> HashMap<TaskKind, TaskExecutor> {
     registry.insert(
         TaskKind::CollectUsageData,
         Arc::new(|state| {
-            let db = state.db.lock().map_err(|e| e.to_string())?;
             let device_id = {
                 let settings = state.settings.lock().map_err(|e| e.to_string())?;
                 settings.device_id.clone()
             };
-            let all_stats = crate::commands::collect_usage_data_inner(&db, &device_id)
-                .map_err(|e| e.to_string())?;
+            let all_stats =
+                crate::commands::collect_usage_data_inner_with_progress(&state.db, &device_id, |_source, _stats| {}, || false)
+                    .map_err(|e| e.to_string())?;
             let total_sessions: i64 = all_stats.iter().map(|s| s.sessions).sum();
             let total_prompts: i64 = all_stats.iter().map(|s| s.prompts).sum();
             Ok(format!(

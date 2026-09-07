@@ -11,9 +11,9 @@ use std::time::Duration;
 
 use crate::settings::OpenVikingConfig;
 
-/// How long to wait for each probe request. Kept short so the probe can run
-/// on the UI thread path without feeling stuck.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
+/// How long to wait for each probe request. Kept short so the probe feels
+/// instant in the settings UI (localhost 应答通常 <10ms；2s 已覆盖极端情况).
+const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Probe outcome, surfaced verbatim in the settings UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

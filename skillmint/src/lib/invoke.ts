@@ -20,3 +20,24 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
     throw wrapped;
   }
 }
+
+/**
+ * Q5 丝滑度兜底：带超时的 invoke。超时后 reject（本地命令可能仍在后台执行，
+ * 但 UI 不再无限转圈）。用于所有"点完一直加载中"风险点位。
+ */
+export async function invokeWithTimeout<T>(
+  cmd: string,
+  args: Record<string, unknown> | undefined,
+  ms: number,
+  timeoutMsg: string
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(timeoutMsg)), ms);
+  });
+  try {
+    return await Promise.race([invoke<T>(cmd, args), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}

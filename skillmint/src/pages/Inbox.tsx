@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { Inbox as InboxIcon } from "lucide-react";
+import { invoke, invokeWithTimeout } from "../lib/invoke";
 import { useAppStore } from "../stores/appStore";
 import { useDiscoveryDecision } from "../hooks/useDiscoveryDecision";
 import { useHotkey, useHotkeyScope } from "../hooks/useHotkeys";
@@ -129,8 +129,11 @@ export default function Inbox() {
     if (runningPipeline) return;
     setRunningPipeline(true);
     try {
-      const result = await invoke<{ inserted: number; expired: number }>(
-        "run_discovery_pipeline"
+      const result = await invokeWithTimeout<{ inserted: number; expired: number }>(
+        "run_discovery_pipeline",
+        undefined,
+        60000,
+        "发现管线超过 60 秒仍未返回：已转为后台执行，可稍后回到收件箱查看结果。"
       );
       await refreshPending();
       bumpInboxRefresh();

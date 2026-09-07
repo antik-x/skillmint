@@ -356,27 +356,41 @@ pub fn get_device_id(state: State<'_, AppState>) -> Result<String, String> {
     Ok(settings.device_id.clone())
 }
 
-#[tauri::command]
+/// Q5：慢命令计时观测。Drop 时若耗时 >500ms 打日志，形成 async 改造清单。
+pub(crate) struct CmdTimer {
+    name: &'static str,
+    start: std::time::Instant,
+}
+impl CmdTimer {
+    pub fn new(name: &'static str) -> Self {
+        Self { name, start: std::time::Instant::now() }
+    }
+}
+impl Drop for CmdTimer {
+    fn drop(&mut self) {
+        let ms = self.start.elapsed().as_millis();
+        if ms > 500 {
+            eprintln!("[cmd-timer] {} took {}ms", self.name, ms);
+        }
+    }
+}
+
+#[tauri::command(async)]
 pub fn collect_usage_data(state: State<'_, AppState>) -> Result<Vec<crate::models::CollectionStats>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let _t = CmdTimer::new("collect_usage_data");
     let device_id = {
         let settings = state.settings.lock().map_err(|e| e.to_string())?;
         settings.device_id.clone()
     };
-    collect_usage_data_inner(&db, &device_id)
-}
-
-/// Internal version of `collect_usage_data` used by the scheduled-task registry.
-pub(crate) fn collect_usage_data_inner(
-    db: &crate::db::Db,
-    device_id: &str,
-) -> Result<Vec<crate::models::CollectionStats>, String> {
-    collect_usage_data_inner_with_progress(db, device_id, |_source, _stats| {}, || false)
+    collect_usage_data_inner_with_progress(&state.db, &device_id, |_source, _stats| {}, || false)
 }
 
 /// Version with a per-source progress callback. Used by the async background job.
+///
+/// Q3 锁粒度：收 `&Mutex<Db>`，逐 source 短锁——老版持有 db 锁跑完整个采集
+/// （分钟级），期间所有碰 db 的命令全部排队（“点完定时采集/扫描一直加载中”主因）。
 pub(crate) fn collect_usage_data_inner_with_progress<F, S>(
-    db: &crate::db::Db,
+    db: &std::sync::Mutex<crate::db::Db>,
     device_id: &str,
     mut on_progress: F,
     should_stop: S,
@@ -396,6 +410,7 @@ where
         let kind = c.collector_kind().to_string();
         let path = c.data_path();
         if !c.is_available() {
+            let db = db.lock().map_err(|e| e.to_string())?;
             let _ = db.upsert_collected_source(&crate::models::CollectedSource {
                 source: source.clone(),
                 collector_kind: kind,
@@ -404,6 +419,7 @@ where
                 last_collected_at: Some(now),
                 record_count: 0,
             });
+            drop(db);
             let stats = crate::models::CollectionStats {
                 source: source.clone(),
                 ..Default::default()
@@ -412,53 +428,61 @@ where
             all_stats.push(stats);
             continue;
         }
-        match c.collect(db, device_id) {
-            Ok(stats) => {
-                // PRD-05: cursor has no sessions — count its code-contribution rows instead.
-                let count = if source == "cursor" {
-                    db.count_collected_code_contributions(&source)
-                        .unwrap_or(stats.sessions)
-                } else {
-                    db.count_collected_sessions(&source).unwrap_or(stats.sessions)
-                };
-                let _ = db.upsert_collected_source(&crate::models::CollectedSource {
-                    source: source.clone(),
-                    collector_kind: kind,
-                    data_path: path,
-                    status: "ok".to_string(),
-                    last_collected_at: Some(now),
-                    record_count: count,
-                });
-                // Best-effort cleanup of file-state rows for files that no longer exist.
-                let _ = crate::collector::prune_missing_file_states(db, &source);
-                on_progress(&source, &stats);
-                all_stats.push(stats);
-            }
-            Err(e) => {
-                // A collector failure must not block the others.
-                eprintln!("[collector] {} failed: {}", source, e);
-                let _ = db.upsert_collected_source(&crate::models::CollectedSource {
-                    source: source.clone(),
-                    collector_kind: kind,
-                    data_path: path,
-                    status: "error".to_string(),
-                    last_collected_at: Some(now),
-                    record_count: 0,
-                });
-                // Even on failure some files may have been processed; clean up stale states.
-                let _ = crate::collector::prune_missing_file_states(db, &source);
-                let stats = crate::models::CollectionStats {
-                    source: source.clone(),
-                    ..Default::default()
-                };
-                on_progress(&source, &stats);
-                all_stats.push(stats);
+        {
+            let db = db.lock().map_err(|e| e.to_string())?;
+            match c.collect(&db, device_id) {
+                Ok(stats) => {
+                    // PRD-05: cursor has no sessions — count its code-contribution rows instead.
+                    let count = if source == "cursor" {
+                        db.count_collected_code_contributions(&source)
+                            .unwrap_or(stats.sessions)
+                    } else {
+                        db.count_collected_sessions(&source).unwrap_or(stats.sessions)
+                    };
+                    let _ = db.upsert_collected_source(&crate::models::CollectedSource {
+                        source: source.clone(),
+                        collector_kind: kind,
+                        data_path: path,
+                        status: "ok".to_string(),
+                        last_collected_at: Some(now),
+                        record_count: count,
+                    });
+                    // Best-effort cleanup of file-state rows for files that no longer exist.
+                    let _ = crate::collector::prune_missing_file_states(&db, &source);
+                    drop(db);
+                    on_progress(&source, &stats);
+                    all_stats.push(stats);
+                }
+                Err(e) => {
+                    // A collector failure must not block the others.
+                    eprintln!("[collector] {} failed: {}", source, e);
+                    let _ = db.upsert_collected_source(&crate::models::CollectedSource {
+                        source: source.clone(),
+                        collector_kind: kind,
+                        data_path: path,
+                        status: "error".to_string(),
+                        last_collected_at: Some(now),
+                        record_count: 0,
+                    });
+                    // Even on failure some files may have been processed; clean up stale states.
+                    let _ = crate::collector::prune_missing_file_states(&db, &source);
+                    drop(db);
+                    let stats = crate::models::CollectionStats {
+                        source: source.clone(),
+                        ..Default::default()
+                    };
+                    on_progress(&source, &stats);
+                    all_stats.push(stats);
+                }
             }
         }
     }
     // After all collectors run, link sessions to projects + upsert agent_instances.
     // (Attribution is done inline during Claude Code collection.)
-    let _ = db.link_sessions_to_projects(device_id);
+    {
+        let db = db.lock().map_err(|e| e.to_string())?;
+        let _ = db.link_sessions_to_projects(device_id);
+    }
     Ok(all_stats)
 }
 
@@ -522,14 +546,13 @@ pub fn start_collection_job(app: tauri::AppHandle, state: State<'_, AppState>) -
             flags.get(&job_id_thread).cloned()
         };
         let result = (|| {
-            let db = state.db.lock().map_err(|e| e.to_string())?;
             let device_id = {
                 let s = state.settings.lock().map_err(|e| e.to_string())?;
                 s.device_id.clone()
             };
             let flag = cancel_ref.clone();
             collect_usage_data_inner_with_progress(
-                &db,
+                &state.db,
                 &device_id,
                 |source, stats| {
                     let payload = CollectionProgressPayload {
@@ -1002,7 +1025,7 @@ pub fn get_projects(state: State<'_, AppState>) -> Result<Vec<crate::models::Pro
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn scan_projects(state: State<'_, AppState>) -> Result<usize, String> {
     // Project discovery happens during collection; this re-runs the linking step.
     let db = state.db.lock().map_err(|e| e.to_string())?;
@@ -1529,16 +1552,21 @@ fn discovery_running() -> &'static Mutex<bool> {
 /// P4: OpenViking read-only probe (gated behind remote_enabled AND
 /// openviking.enabled; zero requests when either is off). See
 /// `docs/openviking-integration.md`.
+///
+/// async + spawn_blocking：阻塞 HTTP 绝不占主线程（Q2/Q4 丝滑度改造）。
 #[tauri::command]
-pub fn openviking_probe(state: State<'_, AppState>) -> Result<crate::openviking::ProbeResult, String> {
+pub async fn openviking_probe(
+    state: tauri::State<'_, AppState>,
+) -> Result<crate::openviking::ProbeResult, String> {
     let (remote_enabled, ov_cfg) = {
         let settings = state.settings.lock().map_err(|e| e.to_string())?;
-        (
-            settings.remote_enabled,
-            settings.openviking.clone(),
-        )
+        (settings.remote_enabled, settings.openviking.clone())
     };
-    Ok(crate::openviking::probe_gated(remote_enabled, &ov_cfg))
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::openviking::probe_gated(remote_enabled, &ov_cfg)
+    })
+    .await
+    .map_err(|e| format!("探测任务失败: {e}"))
 }
 
 /// Run the discovery pipeline now. Serialized via a static Mutex so repeated

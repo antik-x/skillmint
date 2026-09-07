@@ -48,12 +48,13 @@ fn classify_agent_skill_entry(
     (true, Some(agent_hash == center_hash && agent_hash.is_some()))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn scan_agent_skills(
     agent_id: String,
     force: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<Vec<AgentSkillItem>, String> {
+    let _t = CmdTimer::new("scan_agent_skills");
     let mut db = state.db.lock().map_err(|e| e.to_string())?;
     let settings = state.settings.lock().map_err(|e| e.to_string())?;
 

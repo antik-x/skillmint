@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, State};
 
 use super::AppState;
+use super::CmdTimer;
 use crate::hub::{self, HubStatus};
 use crate::index::{self, IndexSummary, SkillIndexEntry};
 use crate::npx::{
@@ -137,8 +138,9 @@ fn resolve_agents(agents: &[String]) -> Vec<String> {
 /// Install via `npx skills add`. Streams live output on the `npx-output` event,
 /// rebuilds the index, runs the SKILL.md safety scan on what landed, and
 /// records the install_audit row.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn npx_install(app: AppHandle, state: State<'_, AppState>, req: InstallRequest) -> Result<InstallResult, String> {
+    let _t = CmdTimer::new("npx_install");
     if req.skills.is_empty() {
         return Err("未指定要安装的 skill（GUI 安装必须显式指定，避免交互卡死）".into());
     }
@@ -218,7 +220,7 @@ pub fn npx_install(app: AppHandle, state: State<'_, AppState>, req: InstallReque
 
 /// Remove via `npx skills remove`, snapshotting the canonical folder to the
 /// trash first (review-first deletion).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn npx_remove(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -259,7 +261,7 @@ pub fn npx_remove(
 }
 
 /// Update via `npx skills update` (whole scope or one skill).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn npx_update(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -267,6 +269,7 @@ pub fn npx_update(
     skill: Option<String>,
     project_root: Option<String>,
 ) -> Result<NpxRunResult, String> {
+    let _t = CmdTimer::new("npx_update");
     let config = {
         let s = state.settings.lock().map_err(|e| e.to_string())?;
         npx_config(&s)
@@ -334,8 +337,9 @@ pub struct SkillsSearchHit {
 /// app talks to the same HTTP API directly. P3 review fix (B5): the request
 /// honors the `proxy_env` setting — the CLI's git steps get the proxy via env
 /// injection, so the search path must not be the odd one out.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn skills_search(state: State<'_, AppState>, query: String, limit: Option<u32>) -> Result<Vec<SkillsSearchHit>, String> {
+    let _t = CmdTimer::new("skills_search");
     let (base, proxy) = {
         let s = state.settings.lock().map_err(|e| e.to_string())?;
         let url = s.skills_api_url.trim().to_string();
@@ -396,7 +400,7 @@ fn urlencoding_encode(s: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Rebuild the index from on-disk truth (locks + agent dirs + hubs).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rebuild_skill_index(
     state: State<'_, AppState>,
     project_root: Option<String>,

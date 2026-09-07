@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { invoke } from "../lib/invoke";
+import { invoke, invokeWithTimeout } from "../lib/invoke";
 import {
   Bot,
   Brain,
@@ -94,7 +94,16 @@ export default function AiSettingsPanel() {
   );
   const [ovSaving, setOvSaving] = useState(false);
   const [ovProbing, setOvProbing] = useState(false);
+  const [ovElapsed, setOvElapsed] = useState(0);
   const [ovProbe, setOvProbe] = useState<OvProbeResult | null>(null);
+
+  // Q5：探测期间显示已等待秒数，超过 2s 提示仍在执行（localhost 正常应 <1s）。
+  useEffect(() => {
+    if (!ovProbing) return;
+    setOvElapsed(0);
+    const t = setInterval(() => setOvElapsed((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [ovProbing]);
 
   useEffect(() => {
     detectAgents();
@@ -268,7 +277,14 @@ export default function AiSettingsPanel() {
     if (!(await saveOv())) return;
     setOvProbing(true);
     try {
-      setOvProbe(await invoke<OvProbeResult>("openviking_probe"));
+      setOvProbe(
+        await invokeWithTimeout<OvProbeResult>(
+          "openviking_probe",
+          undefined,
+          15000,
+          "探测超过 15 秒仍未返回：请确认 OpenViking 服务是否存活，稍后可重试。"
+        )
+      );
     } catch (err) {
       const message = typeof err === "string" ? err : err instanceof Error ? err.message : String(err);
       showError(`探测失败：${message}`);
@@ -455,7 +471,7 @@ export default function AiSettingsPanel() {
               保存 OpenViking 设置
             </Button>
             <Button variant="primary" size="sm" onClick={handleOvProbe} loading={ovProbing} disabled={ovProbing}>
-              探测连通性
+              {ovProbing ? `探测中…（${ovElapsed}s）` : "探测连通性"}
             </Button>
           </div>
           {ovProbe && (
