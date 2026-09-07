@@ -2739,18 +2739,38 @@ fn now_secs_val() -> u64 {
 // PRD-01 patch: project detail page + multi-version skill management tests
 // =============================================================================
 
-/// Insert a project row + an agent + an agent_instances link, for detail-page tests.
+/// Insert a project row + an agent + its collected sessions/token usage, for
+/// detail-page tests. The detail page aggregates from collected_* (keyed by
+/// `agents.source`), so the fixture seeds those — 3 sessions / 1000 tokens.
 fn setup_project_with_agent(db: &Db, device_id: &str, project_id: &str, agent: &Agent) {
+    let n = now_secs_val();
     db.conn_execute(&format!(
         "INSERT INTO projects (id, device_id, name, path, first_seen_at, last_active_at, is_stale, created_at, updated_at) VALUES ('{pid}','{did}','proj-{pid}','/tmp/{pid}','{n}','{n}',0,'{n}','{n}')",
-        pid = project_id, did = device_id, n = now_secs_val()
+        pid = project_id, did = device_id, n = n
     ))
     .unwrap();
+    // The read side attributes sessions by `agents.source`; the default test
+    // agent has none, so pin a deterministic one.
     db.conn_execute(&format!(
-        "INSERT INTO agent_instances (id, device_id, agent_id, project_id, last_session_at, session_count, total_tokens, total_prompts, created_at, updated_at) VALUES ('{did}:{aid}:{pid}','{did}','{aid}','{pid}','{n}',3,1000,10,'{n}','{n}')",
-        did = device_id, aid = agent.id, pid = project_id, n = now_secs_val()
+        "UPDATE agents SET source = 'src-{aid}' WHERE id = '{aid}'",
+        aid = agent.id
     ))
     .unwrap();
+    for i in 0..3 {
+        db.conn_execute(&format!(
+            "INSERT INTO collected_sessions (id, device_id, source, project_id, start_time, origin) VALUES ('s-{pid}-{i}','{did}','src-{aid}','{pid}',{ts},'user')",
+            pid = project_id, did = device_id, aid = agent.id, ts = n - i
+        ))
+        .unwrap();
+    }
+    // Token rows for 2 of the 3 sessions, summing to 1000 (417 + 583).
+    for (i, tokens) in [(0i32, 417i64), (1, 583)] {
+        db.conn_execute(&format!(
+            "INSERT INTO collected_token_usage (id, device_id, session_id, source, project_id, total_tokens, origin) VALUES ('t-{pid}-{i}','{did}','s-{pid}-{i}','src-{aid}','{pid}',{tokens},'user')",
+            pid = project_id, did = device_id, aid = agent.id, tokens = tokens
+        ))
+        .unwrap();
+    }
 }
 
 #[test]
@@ -2825,9 +2845,129 @@ fn test_get_project_agents_returns_linked_agents() {
     assert_eq!(agents[0].total_tokens, 1000);
     assert!(agents[0].skill_count.is_none()); // command fills this, db leaves None
 
-    // A project with no agent_instances returns empty.
+    // A project with no collected sessions returns empty.
     let empty = db.get_project_agents(device, "no-such-proj").unwrap();
     assert!(empty.is_empty());
+}
+
+#[test]
+fn test_get_project_agents_unattributed_source_bucket() {
+    // Q4: a source with no registered agents row (e.g. kimi before registration)
+    // must not vanish — it surfaces as one「其他 Agent」row so the per-agent
+    // rows still add up to the header aggregate.
+    let (_tmp, db, _settings) = setup_test_env();
+    let device = "test-device-0001";
+    let n = now_secs_val();
+    let agent_dir = _tmp.path().join("ag-u");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    let agent = insert_agent(&db, "Registered", &agent_dir);
+
+    db.conn_execute(&format!(
+        "INSERT INTO projects (id, device_id, name, path, created_at) VALUES ('p-u','{d}','pu','/tmp/pu',{n})",
+        d = device, n = n
+    ))
+    .unwrap();
+    db.conn_execute(&format!(
+        "UPDATE agents SET source = 'claude-code' WHERE id = '{}'",
+        agent.id
+    ))
+    .unwrap();
+    // Registered agent: 1 session / 10 tokens.
+    db.conn_execute(&format!(
+        "INSERT INTO collected_sessions (id, device_id, source, project_id, start_time, origin) VALUES ('su1','{d}','claude-code','p-u',{n},'user')",
+        d = device, n = n
+    ))
+    .unwrap();
+    db.conn_execute(&format!(
+        "INSERT INTO collected_token_usage (id, device_id, session_id, source, project_id, total_tokens, origin) VALUES ('tu1','{d}','su1','claude-code','p-u',10,'user')",
+        d = device
+    ))
+    .unwrap();
+    // Unregistered source: 1 session / 7 tokens.
+    db.conn_execute(&format!(
+        "INSERT INTO collected_sessions (id, device_id, source, project_id, start_time, origin) VALUES ('su2','{d}','mystery-cli','p-u',{n},'user')",
+        d = device, n = n
+    ))
+    .unwrap();
+    db.conn_execute(&format!(
+        "INSERT INTO collected_token_usage (id, device_id, session_id, source, project_id, total_tokens, origin) VALUES ('tu2','{d}','su2','mystery-cli','p-u',7,'user')",
+        d = device
+    ))
+    .unwrap();
+
+    let agents = db.get_project_agents(device, "p-u").unwrap();
+    assert_eq!(agents.len(), 2, "registered agent + unattributed bucket");
+    let unattributed = agents.iter().find(|a| a.agent_id == "unattributed").unwrap();
+    assert_eq!(unattributed.agent_name, "其他 Agent");
+    assert_eq!(unattributed.session_count, 1);
+    assert_eq!(unattributed.total_tokens, 7);
+    assert_eq!(
+        agents.iter().map(|a| a.total_tokens).sum::<i64>(),
+        17,
+        "rows sum to the header aggregate"
+    );
+}
+
+#[test]
+fn test_link_agent_counts_idempotent_across_relink() {
+    // Q2b regression: the linking pass re-reads every session that carries a
+    // project_path, so the old "+1 on conflict" upsert inflated
+    // agent_instances.session_count by one full pass per run (~37x on a
+    // long-lived install). The idempotent recompute must keep the counters at
+    // the true session counts no matter how often linking re-runs.
+    let (_tmp, db, _settings) = setup_test_env();
+    let device = "test-device-0001";
+    let n = now_secs_val();
+    let agent_dir = _tmp.path().join("ag-idem");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    let agent = insert_agent(&db, "Idempotent", &agent_dir);
+    db.conn_execute(&format!(
+        "UPDATE agents SET source = 'claude-code' WHERE id = '{}'",
+        agent.id
+    ))
+    .unwrap();
+
+    let proj_path = _tmp.path().join("idem-proj");
+    std::fs::create_dir_all(&proj_path).unwrap();
+    let path = proj_path.to_string_lossy().to_string();
+    for i in 0..2 {
+        db.conn_execute(&format!(
+            "INSERT INTO collected_sessions (id, device_id, source, project_path, start_time, origin) VALUES ('si{i}','{d}','claude-code','{p}',{n},'user')",
+            i = i, d = device, p = path, n = n
+        ))
+        .unwrap();
+    }
+    db.conn_execute(&format!(
+        "INSERT INTO collected_token_usage (id, device_id, session_id, source, total_tokens, origin) VALUES ('ti0','{d}','si0','claude-code',123,'user')",
+        d = device
+    ))
+    .unwrap();
+
+    let first = db.link_sessions_to_projects(device).unwrap();
+    assert_eq!(first, 2);
+    let second = db.link_sessions_to_projects(device).unwrap();
+    assert_eq!(second, 2, "re-link re-reads all sessions with a path");
+
+    let (count, tokens): (i64, i64) = db
+        .conn()
+        .query_row(
+            "SELECT session_count, total_tokens FROM agent_instances WHERE agent_id = ?1",
+            rusqlite::params![agent.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(count, 2, "session_count must not grow across re-link passes");
+    assert_eq!(tokens, 123, "total_tokens recomputed from collected usage");
+
+    let pc: i64 = db
+        .conn()
+        .query_row(
+            "SELECT project_count FROM agents WHERE id = ?1",
+            rusqlite::params![agent.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(pc, 1);
 }
 
 #[test]
@@ -4796,6 +4936,7 @@ fn create_mock_state(tmp: &tempfile::TempDir, settings: &Settings) -> crate::App
         scheduler_running: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         collection_cancel_flags: std::sync::Mutex::new(std::collections::HashMap::new()),
         sync_all_running: std::sync::atomic::AtomicBool::new(false),
+        daily_summary_attempts: std::sync::Mutex::new(std::collections::HashMap::new()),
         app_dir: app_dir.clone(),
     }
 }
@@ -5746,4 +5887,80 @@ fn test_repeat_pattern_candidate_carries_evidence_and_raw_title() {
     assert_eq!(evid.len(), 3);
     assert_eq!(evid[0]["source"], "codex");
     assert!(evid[0]["prompt_text"].as_str().unwrap().contains("brief openviking"));
+}
+
+// =============================================================================
+// P-今天 (2026-09-07): scheduler engine due-check fix + digest freshness
+// =============================================================================
+
+#[test]
+fn digest_regenerated_when_missing_or_stale() {
+    use crate::commands::should_regenerate_digest;
+    // 缺缓存且有会话 → 生成。
+    assert!(should_regenerate_digest(None, Some(1000)));
+    // 缓存比数据落后 10 分钟以上 → 重生成。
+    assert!(should_regenerate_digest(Some(1000), Some(1000 + 601)));
+    // 缓存仍然新鲜 → 不动。
+    assert!(!should_regenerate_digest(Some(1000), Some(1000 + 600)));
+    assert!(!should_regenerate_digest(Some(2000), Some(1500)));
+    // 无会话 → 不生成（NoSessions 分支在命令层处理）。
+    assert!(!should_regenerate_digest(None, None));
+}
+
+fn digest_task(expression: &str) -> crate::models::ScheduledTask {
+    crate::models::ScheduledTask {
+        id: "t".into(),
+        task_kind: crate::models::TaskKind::GenerateDailySummary,
+        name: "每日 AI 摘要生成".into(),
+        description: String::new(),
+        enabled: true,
+        strategy: crate::models::ScheduleStrategy::Cron {
+            expression: expression.into(),
+        },
+        created_at: 0,
+        updated_at: 0,
+        last_run_at: None,
+        last_status: None,
+        next_run_at: None,
+        run_count: 0,
+        error_count: 0,
+    }
+}
+
+#[test]
+fn cron_next_run_uses_local_wall_clock() {
+    use chrono::TimeZone;
+    // 2026-09-07 09:00 北京时间 (= 01:00 UTC)。
+    let now = chrono::Local
+        .with_ymd_and_hms(2026, 9, 7, 9, 0, 0)
+        .single()
+        .unwrap()
+        .timestamp() as u64;
+    let next = crate::scheduler::engine::compute_next_run(&digest_task("0 8 * * *"), now)
+        .expect("cron next run");
+    // 下一次触发必须是本地时间 2026-09-08 08:00，而不是 UTC 08:00（= 16:00 CST，
+    // 引擎修复前的实际行为）。
+    let expected = chrono::Local
+        .with_ymd_and_hms(2026, 9, 8, 8, 0, 0)
+        .single()
+        .unwrap()
+        .timestamp() as u64;
+    assert_eq!(next, expected);
+    // 且必须严格晚于 now（旧实现因这一点让 cron 任务永远无法到期）。
+    assert!(next > now);
+}
+
+#[test]
+fn interval_next_run_is_future_boundary_after_base() {
+    let mut task = digest_task("unused");
+    task.strategy = crate::models::ScheduleStrategy::Interval {
+        value: 30,
+        unit: crate::models::IntervalUnit::Minutes,
+    };
+    task.created_at = 1_000;
+    let now = 5 * 60; // 5 min after creation
+    let next = crate::scheduler::engine::compute_next_run(&task, now).unwrap();
+    // 创建后 30 分钟处触发一次；tick 的 due 判定基于持久化的 next_run_at，
+    // 到点后自然满足 at <= now（补跑一次），finalize 再推进到下一个边界。
+    assert_eq!(next, 1_000 + 30 * 60);
 }

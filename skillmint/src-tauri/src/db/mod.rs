@@ -828,7 +828,81 @@ impl Db {
         self.migrate_digest_dimensions()?;
         // P3-10: one-time cleanup of phantom projects + Kimi tag alignment.
         self.migrate_project_link_hygiene(device_id)?;
+        // P6（2026-09-07）：项目详情页 per-agent tokens 恒为 0 修复——存量
+        // agent_instances 是坏的（total_tokens 恒 0、session_count 被每次
+        // linking 轮次 +1 灌水，真机 ZCode 10878 vs 真实 294）。读侧已改从
+        // collected_* 聚合，此处一次性重算缓存表，agents.project_count /
+        // last_used_at 同步归位。仅重写派生行，无需备份。
+        self.migrate_recompute_agent_instances(device_id)?;
+        // P-今天（2026-09-07）：调度引擎到期判定死锁修复后，把「每日 AI 摘要」
+        // 对存量安装一次性补启用（新装由 ensure_default_tasks 默认启用）。一次性
+        // 哨兵保护，用户之后手动停用不会被覆盖。
+        self.migrate_enable_daily_summary()?;
 
+        Ok(())
+    }
+
+    /// One-shot: enable the `generate_daily_summary` task on installs created
+    /// before the scheduler-engine fix. The engine's due-check starved every
+    /// cron task, so this task never actually ran — enabling it now is the
+    /// "默认启用" rollout, and the schema_meta sentinel keeps it from
+    /// overriding a deliberate later pause.
+    fn migrate_enable_daily_summary(&self) -> Result<()> {
+        let done = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM schema_meta WHERE key = 'daily_summary_auto_enable_v1'",
+                [],
+                |_| Ok(()),
+            )
+            .is_ok();
+        if done {
+            return Ok(());
+        }
+        self.conn.execute(
+            "UPDATE scheduled_tasks SET enabled = 1 WHERE task_kind = 'generate_daily_summary'",
+            [],
+        )?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('daily_summary_auto_enable_v1', '1')",
+            [],
+        )?;
+        eprintln!("[migration] daily summary task auto-enabled for existing install");
+        Ok(())
+    }
+
+    fn migrate_recompute_agent_instances(&mut self, device_id: &str) -> Result<()> {
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )?;
+        let done: bool = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM schema_meta WHERE key = 'agent_instances_recompute_v1'",
+                [],
+                |_| Ok(()),
+            )
+            .is_ok();
+        if done {
+            return Ok(());
+        }
+
+        let tx = self.conn.transaction()?;
+        let res = Db::recompute_agent_instances_conn(&tx, device_id)
+            .and_then(|()| Db::refresh_agent_usage_stats_conn(&tx));
+        match res {
+            Ok(()) => tx.commit()?,
+            Err(e) => {
+                let _ = tx.rollback();
+                anyhow::bail!("agent_instances recompute migration failed (rolled back): {e}");
+            }
+        }
+        self.conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('agent_instances_recompute_v1', '1')",
+            [],
+        )?;
+        eprintln!("[migration] agent_instances recomputed from collected_sessions");
         Ok(())
     }
 

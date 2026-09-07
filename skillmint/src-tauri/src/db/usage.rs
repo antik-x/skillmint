@@ -22,13 +22,17 @@ impl Db {
         conn: &rusqlite::Connection,
         device_id: &str,
     ) -> Result<i64> {
-        // Read all (session_id, source, project_path, start_time) that are unlinked.
+        // Read all (session_id, source, project_path, start_time) of THIS device
+        // that carry a project path. Device-scoped on purpose: the pass re-runs
+        // on every collection cycle, and without the filter it re-stamped other
+        // devices' sessions onto this device's project rows (cross-device
+        // pollution that made the project list card disagree with the header).
         let mut stmt = conn.prepare(
             "SELECT id, source, project_path, start_time FROM collected_sessions
-             WHERE project_path IS NOT NULL AND project_path <> ''",
+             WHERE device_id = ?1 AND project_path IS NOT NULL AND project_path <> ''",
         )?;
         let rows: Vec<(String, String, String, Option<u64>)> = stmt
-            .query_map([], |row| {
+            .query_map(params![device_id], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -42,7 +46,7 @@ impl Db {
         drop(stmt);
 
         let mut linked = 0i64;
-        for (session_id, source, path, start_ts) in rows {
+        for (session_id, _source, path, _start_ts) in rows {
             let project_id = match Self::ensure_project_by_path_conn(conn, device_id, &path)? {
                 Some(p) => p,
                 None => continue,
@@ -57,38 +61,85 @@ impl Db {
                 "UPDATE collected_token_usage SET project_id = ?1 WHERE session_id = ?2",
                 params![project_id, session_id],
             )?;
-            // PRD-06 §3.2: attribute the session to an Agent via `agents.source`
-            // (deterministic equality), replacing the old `derive_agent_id` hack.
-            // If no Agent carries this source, skip attribution but still link the project.
-            let agent_key: Option<String> = conn
-                .query_row(
-                    "SELECT id FROM agents WHERE source = ?1 LIMIT 1",
-                    params![&source],
-                    |row| row.get(0),
-                )
-                .ok();
-            if let Some(agent_key) = agent_key {
-                let ai_id = format!("{device_id}:{agent_key}:{project_id}");
-                let now = now_secs();
-                conn.execute(
-                    r#"INSERT INTO agent_instances
-                       (id, device_id, agent_id, project_id, last_session_at, session_count,
-                        total_tokens, total_prompts, created_at, updated_at)
-                       VALUES (?1, ?2, ?3, ?4, ?5, 1, 0, 0, ?6, ?7)
-                       ON CONFLICT(device_id, agent_id, project_id) DO UPDATE SET
-                         last_session_at = MAX(COALESCE(excluded.last_session_at, last_session_at), COALESCE(last_session_at, 0)),
-                         session_count = agent_instances.session_count + 1,
-                         updated_at = excluded.updated_at"#,
-                    params![ai_id, device_id, agent_key, project_id, start_ts.unwrap_or(now), now, now],
-                )?;
-            }
             linked += 1;
         }
+
+        // PRD-06 §3.2: attribution is source-based (deterministic equality).
+        // Recompute agent_instances in one idempotent pass — the old per-session
+        // "+1 on conflict" upsert re-counted every session on every linking pass
+        // (the loop deliberately re-reads all sessions with a project_path), so a
+        // long-lived install inflated session_count ~37x, and total_tokens /
+        // total_prompts were inserted as 0 and never maintained. The read side
+        // (get_project_agents) aggregates from collected_* directly anyway; this
+        // rebuild keeps the cached counters sane for agents.project_count /
+        // last_used_at below.
+        Self::recompute_agent_instances_conn(conn, device_id)?;
 
         // Populate agents.last_used_at and project_count from agent_instances (PRD-01 §5.1).
         // P3-10: update every agent — the old `WHERE EXISTS` guard left stale
         // counts on agents whose instances were wiped (e.g. by the hygiene
         // migration after their sessions turned out to be phantom links).
+        Self::refresh_agent_usage_stats_conn(conn)?;
+        Ok(linked)
+    }
+
+    /// Rebuild all `agent_instances` rows for one device from
+    /// `collected_sessions` in a single idempotent pass. Sessions are attributed
+    /// to an Agent via `agents.source`; SkillMint's own ACP analysis sessions
+    /// (`origin = 'skillmint_acp'`) are excluded, matching the read side.
+    pub fn recompute_agent_instances_conn(
+        conn: &rusqlite::Connection,
+        device_id: &str,
+    ) -> Result<()> {
+        let now = now_secs();
+        conn.execute(
+            "DELETE FROM agent_instances WHERE device_id = ?1",
+            params![device_id],
+        )?;
+        conn.execute(
+            r#"INSERT INTO agent_instances
+               (id, device_id, agent_id, project_id, last_session_at, session_count,
+                total_tokens, total_prompts, created_at, updated_at)
+               SELECT ?1 || ':' || a.id || ':' || s.project_id, ?1, a.id, s.project_id,
+                      MAX(s.start_time), COUNT(DISTINCT s.id), 0, 0, ?2, ?2
+               FROM collected_sessions s
+               JOIN projects p ON p.id = s.project_id AND p.device_id = ?1
+               JOIN agents a ON a.source = s.source
+               WHERE s.device_id = ?1
+                 AND s.project_id IS NOT NULL AND s.project_id <> ''
+                 AND IFNULL(s.origin, 'user') != 'skillmint_acp'
+               GROUP BY a.id, s.project_id"#,
+            params![device_id, now],
+        )?;
+        // Fill the cached usage counters per (agent source, project) from the
+        // usage tables, joined through the sessions (same methodology as the
+        // read-side aggregates).
+        conn.execute(
+            r#"UPDATE agent_instances SET
+                 total_tokens = IFNULL((
+                     SELECT SUM(t.total_tokens) FROM collected_sessions s
+                     JOIN collected_token_usage t ON t.session_id = s.id
+                     WHERE s.device_id = agent_instances.device_id
+                       AND s.project_id = agent_instances.project_id
+                       AND s.source = (SELECT a.source FROM agents a WHERE a.id = agent_instances.agent_id)
+                       AND IFNULL(s.origin, 'user') != 'skillmint_acp'), 0),
+                 total_prompts = (
+                     SELECT COUNT(*) FROM collected_sessions s
+                     JOIN collected_prompts pr ON pr.session_id = s.id
+                     WHERE s.device_id = agent_instances.device_id
+                       AND s.project_id = agent_instances.project_id
+                       AND s.source = (SELECT a.source FROM agents a WHERE a.id = agent_instances.agent_id)
+                       AND IFNULL(s.origin, 'user') != 'skillmint_acp'),
+                 updated_at = ?1
+               WHERE device_id = ?2"#,
+            params![now, device_id],
+        )?;
+        Ok(())
+    }
+
+    /// Recompute `agents.last_used_at` / `project_count` from agent_instances
+    /// (PRD-01 §5.1). Runs after every agent_instances rebuild.
+    pub fn refresh_agent_usage_stats_conn(conn: &rusqlite::Connection) -> Result<()> {
         let now = now_secs();
         conn.execute(
             r#"UPDATE agents SET
@@ -103,7 +154,7 @@ impl Db {
                  updated_at = ?1"#,
             params![now],
         )?;
-        Ok(linked)
+        Ok(())
     }
 
     /// P3-10: full rebuild of the agent↔project association data from
@@ -388,7 +439,8 @@ impl Db {
                       COALESCE(SUM(t.total_tokens), 0) AS total_tokens
                FROM projects p
                LEFT JOIN collected_sessions s
-                 ON s.project_id = p.id AND IFNULL(s.start_time, 0) >= ?1
+                 ON s.project_id = p.id AND s.device_id = p.device_id
+                    AND IFNULL(s.start_time, 0) >= ?1
                     AND IFNULL(s.origin, 'user') != 'skillmint_acp'
                LEFT JOIN collected_token_usage t
                  ON t.session_id = s.id
@@ -476,7 +528,9 @@ impl Db {
                JOIN projects p ON ai.project_id = p.id
                LEFT JOIN collected_sessions s
                  ON s.project_id = p.id
+                AND s.device_id = ai.device_id
                 AND s.source = (SELECT a.source FROM agents a WHERE a.id = ai.agent_id)
+                AND IFNULL(s.origin, 'user') != 'skillmint_acp'
                LEFT JOIN collected_token_usage t ON t.session_id = s.id
                WHERE ai.device_id = ?1 AND ai.agent_id = ?2
                GROUP BY p.id ORDER BY p.last_active_at DESC"#,
@@ -494,6 +548,17 @@ impl Db {
     }
 
     /// PRD-01 patch FR-A/B: all agents active in a single project (with usage stats).
+    ///
+    /// Aggregates straight from `collected_sessions` + `collected_token_usage`
+    /// keyed by `agents.source` — the same methodology as the detail header
+    /// (`get_project_aggregate`) and the project list card, so the rows and the
+    /// header always add up. The old read of `agent_instances.total_tokens`
+    /// showed 0 forever (the linking upsert inserted 0 and never maintained it),
+    /// and `agent_instances.session_count` was inflated by every re-link pass.
+    ///
+    /// Sources with no matching `agents` row (e.g. a collector key that was never
+    /// registered as an Agent) surface as one synthetic「其他 Agent」row so the
+    /// per-agent rows still sum to the header.
     pub fn get_project_agents(
         &self,
         device_id: &str,
@@ -501,34 +566,75 @@ impl Db {
     ) -> Result<Vec<ProjectAgentEntry>> {
         let mut stmt = self.conn.prepare(
             r#"SELECT a.id, a.name, a.skill_directory, a.is_enabled,
-                      ai.last_session_at, ai.session_count, ai.total_tokens
-               FROM agent_instances ai
-               JOIN agents a ON ai.agent_id = a.id
-               WHERE ai.device_id = ?1 AND ai.project_id = ?2
-               ORDER BY ai.total_tokens DESC, ai.last_session_at DESC NULLS LAST"#,
+                      MAX(s.start_time) AS last_session_at,
+                      COUNT(DISTINCT s.id) AS session_count,
+                      COALESCE(SUM(t.total_tokens), 0) AS total_tokens
+               FROM agents a
+               JOIN collected_sessions s
+                 ON s.source = a.source
+                AND s.device_id = ?1 AND s.project_id = ?2
+                AND IFNULL(s.origin, 'user') != 'skillmint_acp'
+               LEFT JOIN collected_token_usage t ON t.session_id = s.id
+               GROUP BY a.id
+               ORDER BY total_tokens DESC, last_session_at DESC NULLS LAST"#,
         )?;
-        let rows = stmt.query_map(params![device_id, project_id], |row| {
-            Ok(ProjectAgentEntry {
-                agent_id: row.get(0)?,
-                agent_name: row.get(1)?,
-                skill_directory: row.get(2)?,
-                is_enabled: row.get::<_, i64>(3)? != 0,
-                last_session_at: row.get::<_, Option<i64>>(4)?.map(|t| t as u64),
-                session_count: row.get(5)?,
-                total_tokens: row.get(6)?,
+        let mut agents = stmt
+            .query_map(params![device_id, project_id], |row| {
+                Ok(ProjectAgentEntry {
+                    agent_id: row.get(0)?,
+                    agent_name: row.get(1)?,
+                    skill_directory: row.get(2)?,
+                    is_enabled: row.get::<_, i64>(3)? != 0,
+                    last_session_at: row.get::<_, Option<i64>>(4)?.map(|t| t as u64),
+                    session_count: row.get(5)?,
+                    total_tokens: row.get(6)?,
+                    skill_count: None,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Q4: bucket the sources that have no registered Agent (agents.source is
+        // the only attribution key) into one synthetic row, appended last.
+        let (other_sessions, other_tokens, other_last): (i64, i64, Option<i64>) = self
+            .conn
+            .query_row(
+                r#"SELECT COUNT(DISTINCT s.id),
+                          COALESCE(SUM(t.total_tokens), 0),
+                          MAX(s.start_time)
+                   FROM collected_sessions s
+                   LEFT JOIN collected_token_usage t ON t.session_id = s.id
+                   WHERE s.device_id = ?1 AND s.project_id = ?2
+                     AND IFNULL(s.origin, 'user') != 'skillmint_acp'
+                     AND s.source NOT IN (SELECT source FROM agents WHERE source IS NOT NULL)"#,
+                params![device_id, project_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        if other_sessions > 0 {
+            agents.push(ProjectAgentEntry {
+                agent_id: "unattributed".to_string(),
+                agent_name: "其他 Agent".to_string(),
+                skill_directory: String::new(),
+                is_enabled: true,
+                last_session_at: other_last.map(|t| t as u64),
+                session_count: other_sessions,
+                total_tokens: other_tokens,
                 skill_count: None,
-            })
-        })?;
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+            });
+            agents.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens));
+        }
+        Ok(agents)
     }
 
     /// PRD-01 patch FR-A: a project's aggregate usage (sessions + tokens).
+    /// Excludes SkillMint's own ACP analysis sessions, same as the project list
+    /// card and the per-agent rows — the three numbers must always add up.
     pub fn get_project_aggregate(&self, device_id: &str, project_id: &str) -> Result<(i64, i64)> {
         let row: (i64, i64) = self.conn.query_row(
             r#"SELECT COUNT(DISTINCT s.id), COALESCE(SUM(t.total_tokens), 0)
                FROM collected_sessions s
                LEFT JOIN collected_token_usage t ON t.session_id = s.id
-               WHERE s.device_id = ?1 AND s.project_id = ?2"#,
+               WHERE s.device_id = ?1 AND s.project_id = ?2
+                 AND IFNULL(s.origin, 'user') != 'skillmint_acp'"#,
             params![device_id, project_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
