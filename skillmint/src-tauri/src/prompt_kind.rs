@@ -36,6 +36,8 @@ const NON_USER_PREFIXES: &[&str] = &[
     "The following is the Codex agent history",
     // Stop hook 通知（真机榜单 159 次实例）。
     "A session-scoped Stop hook is now active",
+    // 用户环境其它工具的分析提示词（pre-publish 事实核查，cursor 18 次实例）。
+    "你是发布前事实核查 Agent",
     "[SYSTEM NOTIFICATION",
     "(Bash completed with no output)",
     "DO NOT respond",
