@@ -1,0 +1,36 @@
+skillmint/src-tauri/src/commands/mod.rs
+  h_04c00a69eeb820 1349-1350,1352,1354-1392,1604-1607
+skillmint/src-tauri/src/db/mod.rs
+  h_04c00a69eeb820 602-612
+skillmint/src-tauri/src/db/reports.rs
+  h_04c00a69eeb820 43-54,62-85,87-89,91-95,103-151
+skillmint/src-tauri/src/lib.rs
+  h_04c00a69eeb820 577-579
+skillmint/src-tauri/src/models.rs
+  h_04c00a69eeb820 497-512
+skillmint/src-tauri/src/tests.rs
+  h_04c00a69eeb820 5652,5658-5706
+skillmint/src/components/DataCollectionPanel.tsx
+  h_04c00a69eeb820 32,36-38,54-63,65-75,79,81-83,85-134,136
+skillmint/src/pages/Settings.tsx
+  h_04c00a69eeb820 145
+skillmint/src/pages/Usage.test.tsx
+  h_04c00a69eeb820 5,7,66-67,81,94,126-138,151,170-182,192,316-332
+skillmint/src/pages/Usage.tsx
+  h_04c00a69eeb820 4,7-8,17,24-25,39-63,406-408,521-524,527,532,535,537-575,577-610,612-621,623-624,626-641,644-667,669-671,673-711,713-734,736-741,743-756,758-778,780-781,783-788,790-794,845-858,863-865,873,879,1260,1262-1263,1265,1268-1272,1274,1277-1283,1286,1290,1293-1301,1304-1350,1354,1356,1358,1365-1447,1449,1451-1496,1510-1536
+skillmint/src/stores/appStore.ts
+  h_04c00a69eeb820 25,48,64,155,196
+skillmint/src/types/index.ts
+  h_04c00a69eeb820 368-381
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.6.24",
+  "base_commit_sha": "833975fe39abd191c07117e0c0659f8a702a4762",
+  "prompts": {},
+  "humans": {
+    "h_04c00a69eeb820": {
+      "author": "antik-x <jianyong.me@gmail.com>"
+    }
+  }
+}
