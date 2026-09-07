@@ -1,0 +1,30 @@
+skillmint/src-tauri/src/commands/mod.rs
+  h_04c00a69eeb820 359-378,380,385,389-391,393,413,422,431-476,482-485,555,1028,1555-1556,1558-1560,1563,1565-1569
+skillmint/src-tauri/src/commands/npxskills.rs
+  h_04c00a69eeb820 10,141,143,223,264,272,340,342,403
+skillmint/src-tauri/src/commands/scan.rs
+  h_04c00a69eeb820 3,5
+skillmint/src-tauri/src/commands/sync.rs
+  h_04c00a69eeb820 51,57
+skillmint/src-tauri/src/openviking.rs
+  h_04c00a69eeb820 14-16
+skillmint/src-tauri/src/scheduler/registry.rs
+  h_04c00a69eeb820 27-29
+skillmint/src/components/AiSettingsPanel.tsx
+  h_04c00a69eeb820 2,97,100-107,280-287,474
+skillmint/src/lib/invoke.ts
+  h_04c00a69eeb820 23-43
+skillmint/src/pages/Inbox.tsx
+  h_04c00a69eeb820 3,132-136
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.6.24",
+  "base_commit_sha": "09f9c3195e4fc2447317e50c950aace396ef4204",
+  "prompts": {},
+  "humans": {
+    "h_04c00a69eeb820": {
+      "author": "antik-x <jianyong.me@gmail.com>"
+    }
+  }
+}
