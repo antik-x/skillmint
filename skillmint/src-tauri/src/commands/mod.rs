@@ -890,6 +890,139 @@ pub fn get_daily_summary(
     db.get_daily_summary(&date).map_err(|e| e.to_string())
 }
 
+/// P-今天：`ensure_daily_summary` 的结果。`fresh` 表示缓存已存在且足够新鲜，
+/// 前端保留现状即可。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum EnsureSummaryOutcome {
+    Fresh,
+    Generated { summary: crate::analyzer::DailySummary },
+    NoSessions,
+    Failed { reason: String },
+}
+
+/// 日报重生成判定（纯函数，便于单测）：缓存缺失且有会话 → 生成；缓存比当天
+/// 数据落后 10 分钟以上 → 重新生成（采集持续落库时今天卡能跟着长）。
+pub(crate) fn should_regenerate_digest(created_at: Option<u64>, last_activity: Option<u64>) -> bool {
+    const STALE_SECS: u64 = 600;
+    match (created_at, last_activity) {
+        (None, Some(_)) => true,
+        (Some(created), Some(activity)) => activity.saturating_sub(created) > STALE_SECS,
+        _ => false,
+    }
+}
+
+/// P-今天：按需保证某天的日报存在且足够新鲜（今天页双卡进入时调用）。
+/// - 缺失且有会话 → 生成（规则版打底，配了 AI 走 LLM/ACP）；
+/// - 已存在但明显落后于当天数据 → 重新生成；
+/// - 其余 → Fresh（不重复计费）。
+/// 内存节流：同一日期 10 分钟内只尝试一次，避免频繁进出页面反复触发 LLM。
+///
+/// async + spawn_blocking：LLM/ACP 调用绝不占主线程（P5）。
+#[tauri::command]
+pub async fn ensure_daily_summary(
+    date: String,
+    app: AppHandle,
+) -> Result<EnsureSummaryOutcome, String> {
+    {
+        let state = app.state::<AppState>();
+        let mut attempts = state
+            .daily_summary_attempts
+            .lock()
+            .map_err(|e| e.to_string())?;
+        let now = current_timestamp();
+        if let Some(last) = attempts.get(&date) {
+            if now.saturating_sub(*last) < 600 {
+                return Ok(EnsureSummaryOutcome::Fresh);
+            }
+        }
+        attempts.insert(date.clone(), now);
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let (created_at, last_activity) = {
+            let db = state.db.lock().map_err(|e| e.to_string())?;
+            (
+                db.get_daily_summary_created_at(&date)
+                    .map_err(|e| e.to_string())?,
+                db.day_last_activity(&date).map_err(|e| e.to_string())?,
+            )
+        };
+        if created_at.is_none() && last_activity.is_none() {
+            return Ok(EnsureSummaryOutcome::NoSessions);
+        }
+        if !should_regenerate_digest(created_at, last_activity) {
+            return Ok(EnsureSummaryOutcome::Fresh);
+        }
+        let cfg = {
+            let settings = state.settings.lock().map_err(|e| e.to_string())?;
+            settings.ai.clone()
+        };
+        match crate::analyzer::generate_daily_summary(&state.db, &date, &cfg)
+            .map_err(|e| e.to_string())?
+        {
+            crate::analyzer::Outcome::Generated { summary } => {
+                Ok(EnsureSummaryOutcome::Generated { summary })
+            }
+            crate::analyzer::Outcome::NoSessions => Ok(EnsureSummaryOutcome::NoSessions),
+            crate::analyzer::Outcome::NoKey => Ok(EnsureSummaryOutcome::Failed {
+                reason: "未配置 AI".into(),
+            }),
+            crate::analyzer::Outcome::Failed { reason } => {
+                Ok(EnsureSummaryOutcome::Failed { reason })
+            }
+        }
+    })
+    .await
+    .map_err(|e| format!("摘要任务失败: {e}"))?
+}
+
+/// P-今天：「连续记录天数」口径——区间内（含端点）真实活跃过的本地日历日
+/// （与日报是否生成过无关）。
+#[tauri::command]
+pub fn list_active_days(
+    start_date: String,
+    end_date: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.list_active_days(&start_date, &end_date)
+        .map_err(|e| e.to_string())
+}
+
+/// P-今天：启动补偿。调度器负责「app 一直开着」的 08:00 触发；这里负责
+/// 「错过了夜间窗口」——昨日有会话但日报缺失时补生成。供启动后台线程调用
+/// （自带 Db 连接，包装成 P5 需要的 Mutex 形状）。
+pub fn catch_up_yesterday_summary(
+    db: &std::sync::Mutex<crate::db::Db>,
+    cfg: &crate::settings::AiConfig,
+) -> Option<String> {
+    let yesterday: String = (chrono::Local::now() - chrono::Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+    let has_sessions = {
+        let d = db.lock().ok()?;
+        d.day_last_activity(&yesterday).ok().flatten().is_some()
+    };
+    if !has_sessions {
+        return None;
+    }
+    let exists = {
+        let d = db.lock().ok()?;
+        d.get_daily_summary_created_at(&yesterday).ok().flatten().is_some()
+    };
+    if exists {
+        return None;
+    }
+    match crate::analyzer::generate_daily_summary(db, &yesterday, cfg) {
+        Ok(crate::analyzer::Outcome::Generated { .. }) => {
+            Some(format!("已补生成 {yesterday} 日报"))
+        }
+        Ok(_) => None,
+        Err(e) => Some(format!("补生成 {yesterday} 日报失败: {e}")),
+    }
+}
+
 /// PRD-11: list cached daily summaries within a date range (inclusive),
 /// ordered by date descending. Powers the date list in the AI daily-summary
 /// value module.

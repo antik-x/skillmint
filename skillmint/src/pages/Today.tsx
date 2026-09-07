@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "../lib/invoke";
-import { getSkillIndex, rebuildSkillIndex, type SkillIndexEntry } from "../lib/npxskills";
+import {
+  cleanBrokenSkillLinks,
+  getSkillIndex,
+  rebuildSkillIndex,
+  type SkillIndexEntry,
+} from "../lib/npxskills";
 import {
   ArrowRight,
   Bot,
@@ -10,6 +15,7 @@ import {
   ScanSearch,
   Settings,
   Sparkles,
+  Trash2,
 } from "lucide-react";
 import { useAppStore } from "../stores/appStore";
 import { useCollectionStore } from "../stores/collectionStore";
@@ -17,6 +23,7 @@ import { useDiscoveryDecision } from "../hooks/useDiscoveryDecision";
 import { humanizeError, showError, showInfo, showSuccess } from "../stores/toastStore";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
+import { Dialog } from "../components/ui/Dialog";
 import type {
   Agent,
   CollectedSource,
@@ -24,6 +31,7 @@ import type {
   Discovery,
   DiscoveryKind,
   DismissReason,
+  EnsureSummaryOutcome,
   GrowthMetrics,
   SkillUsageSummary,
   SummaryOutcome,
@@ -49,12 +57,10 @@ function addDays(iso: string, days: number): string {
   return local.toISOString().slice(0, 10);
 }
 
-function formatDateLabel(iso: string): string {
+/// Always "M月D日" — used in card badges so they never read as a tautology
+/// like the old「昨日 · 昨天」.
+function monthDay(iso: string): string {
   const d = new Date(iso + "T00:00:00");
-  const today = todayIso();
-  const yesterday = addDays(today, -1);
-  if (iso === today) return "今天";
-  if (iso === yesterday) return "昨天";
   return `${d.getMonth() + 1}月${d.getDate()}日`;
 }
 
@@ -86,13 +92,7 @@ function projectBasename(pathOrName: string): string {
   return parts.length > 0 ? parts[parts.length - 1] : pathOrName;
 }
 
-interface DailySummaryMeta {
-  date: string;
-  created_at: number;
-}
-
-export default function Today() {
-  const agents = useAppStore((state) => state.agents);
+export default function Today() {  const agents = useAppStore((state) => state.agents);
   const settings = useAppStore((state) => state.settings);
   const setActiveTab = useAppStore((state) => state.setActiveTab);
   const navigateToSettings = useAppStore((state) => state.navigateToSettings);
@@ -113,16 +113,25 @@ export default function Today() {
   const [summary, setSummary] = useState<DailySummary | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [fallbackMetrics, setFallbackMetrics] = useState<WindowMetrics | null>(null);
+  // P-今天: hero card — today's live digest.
+  const [todaySummary, setTodaySummary] = useState<DailySummary | null>(null);
+  const [todaySummaryLoading, setTodaySummaryLoading] = useState(true);
+  const [todayFallback, setTodayFallback] = useState<WindowMetrics | null>(null);
+  const [todayEnsuring, setTodayEnsuring] = useState(false);
   const [discoveries, setDiscoveries] = useState<Discovery[] | null>(null);
   const [skillUsage, setSkillUsage] = useState<SkillUsageSummary[]>([]);
   const [growthMetrics, setGrowthMetrics] = useState<GrowthMetrics | null>(null);
-  const [dailyMetas, setDailyMetas] = useState<DailySummaryMeta[]>([]);
+  // P-今天: consecutive-day streak now counts raw activity days, not digests.
+  const [activeDays, setActiveDays] = useState<string[]>([]);
   const [weeklySpark, setWeeklySpark] = useState<{ date: string; sessions: number }[]>([]);
   const [scanning, setScanning] = useState(false);
   // P3 review: the sync-health panel is retired with the sync engine; Today
   // shows a live skill-index chip instead.
   const [indexRows, setIndexRows] = useState<SkillIndexEntry[]>([]);
   const [refreshingIndex, setRefreshingIndex] = useState(false);
+  // P-今天: dangling-link cleanup exit for the health bar.
+  const [brokenDialogOpen, setBrokenDialogOpen] = useState(false);
+  const [cleaningBroken, setCleaningBroken] = useState(false);
 
   const loadIndex = useCallback(async () => {
     try {
@@ -148,6 +157,7 @@ export default function Today() {
     void loadIndex();
   }, [loadIndex]);
 
+  const today = todayIso();
   const yesterday = yesterdayIso();
 
   const hasAgents = agents.length > 0;
@@ -160,6 +170,44 @@ export default function Today() {
   useEffect(() => {
     loadCollectionStatus();
   }, [loadCollectionStatus]);
+
+  // P-今天 hero: load today's digest, then lazily ensure it exists and is
+  // fresh (backend throttles to one attempt per 10 min per date).
+  useEffect(() => {
+    let cancelled = false;
+    setTodaySummaryLoading(true);
+    invoke<DailySummary | null>("get_daily_summary", { date: today })
+      .then((s) => {
+        if (!cancelled) setTodaySummary(s);
+      })
+      .catch(() => {
+        if (!cancelled) setTodaySummary(null);
+      })
+      .finally(() => {
+        if (!cancelled) setTodaySummaryLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [today]);
+
+  const ensureToday = useCallback(async () => {
+    setTodayEnsuring(true);
+    try {
+      const outcome = await invoke<EnsureSummaryOutcome>("ensure_daily_summary", {
+        date: todayIso(),
+      });
+      if (outcome?.status === "generated") setTodaySummary(outcome.summary);
+    } catch {
+      /* silent — the hero card falls back to raw metrics */
+    } finally {
+      setTodayEnsuring(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void ensureToday();
+  }, [ensureToday]);
 
   // Load yesterday's daily summary.
   useEffect(() => {
@@ -180,6 +228,21 @@ export default function Today() {
     };
   }, [yesterday]);
 
+  // P-今天: lazy fallback for yesterday — when the nightly schedule (or the
+  // startup catch-up) missed it, generate on first view instead of showing a hole.
+  useEffect(() => {
+    if (summaryLoading || summary) return;
+    let cancelled = false;
+    invoke<EnsureSummaryOutcome>("ensure_daily_summary", { date: yesterday })
+      .then((o) => {
+        if (!cancelled && o?.status === "generated") setSummary(o.summary);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [summary, summaryLoading, yesterday]);
+
   // Fallback metrics for the story card when no summary exists.
   useEffect(() => {
     if (summary) return;
@@ -195,6 +258,22 @@ export default function Today() {
       cancelled = true;
     };
   }, [summary, yesterday]);
+
+  // P-今天 hero: fallback metrics when today has no digest yet.
+  useEffect(() => {
+    if (todaySummary) return;
+    let cancelled = false;
+    invoke<WindowMetrics>("get_window_metrics", { kind: "day", refDate: today })
+      .then((m) => {
+        if (!cancelled) setTodayFallback(m);
+      })
+      .catch(() => {
+        if (!cancelled) setTodayFallback(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [todaySummary, today]);
 
   // Pending discoveries for the inbox strip.
   useEffect(() => {
@@ -226,20 +305,21 @@ export default function Today() {
       .catch(() => setGrowthMetrics(null));
   }, []);
 
-  // Daily summaries for consecutive-day calculation.
+  // P-今天: active days for the consecutive-day streak (raw activity,
+  // digest generation must not influence it; today counts too).
   useEffect(() => {
-    invoke<DailySummaryMeta[]>("list_daily_summaries", {
+    invoke<string[]>("list_active_days", {
       startDate: addDays(todayIso(), -90),
       endDate: todayIso(),
     })
-      .then((rows) => setDailyMetas(rows))
-      .catch(() => setDailyMetas([]));
+      .then(setActiveDays)
+      .catch(() => setActiveDays([]));
   }, []);
 
-  // Build 7-day session sparkline from per-day window metrics.
+  // Build 7-day session sparkline from per-day window metrics (ending today).
   useEffect(() => {
     let cancelled = false;
-    const dates = Array.from({ length: 7 }, (_, i) => addDays(yesterday, -6 + i));
+    const dates = Array.from({ length: 7 }, (_, i) => addDays(today, -6 + i));
     Promise.all(
       dates.map((date) =>
         invoke<WindowMetrics>("get_window_metrics", { kind: "day", refDate: date }).catch(
@@ -259,18 +339,18 @@ export default function Today() {
     return () => {
       cancelled = true;
     };
-  }, [yesterday]);
+  }, [today]);
 
   const consecutiveDays = useMemo(() => {
-    const dates = new Set(dailyMetas.map((m) => m.date));
+    const days = new Set(activeDays);
     let count = 0;
-    let d = yesterday;
-    while (dates.has(d)) {
+    let d = today;
+    while (days.has(d)) {
       count++;
       d = addDays(d, -1);
     }
     return count;
-  }, [dailyMetas, yesterday]);
+  }, [activeDays, today]);
 
   const monthlyCitations = useMemo(
     () => skillUsage.reduce((sum, s) => sum + (s.usage_count ?? 0), 0),
@@ -314,6 +394,25 @@ export default function Today() {
     bumpInboxRefresh();
     if ((action === "accept" || action === "accept_edited") && createdSkillId) {
       navigateToSkillEditor(createdSkillId);
+    }
+  };
+
+  const brokenRows = useMemo(() => indexRows.filter((r) => r.status === "broken"), [indexRows]);
+
+  const handleCleanBroken = async () => {
+    if (cleaningBroken) return;
+    setCleaningBroken(true);
+    try {
+      const res = await cleanBrokenSkillLinks();
+      await refreshIndex();
+      showSuccess(
+        `已清理 ${res.cleaned} 条失效链接${res.skipped > 0 ? `，跳过 ${res.skipped} 条` : ""}`
+      );
+      setBrokenDialogOpen(false);
+    } catch (err) {
+      showError(humanizeError(err, { context: "清理失效链接" }));
+    } finally {
+      setCleaningBroken(false);
     }
   };
 
@@ -410,34 +509,70 @@ export default function Today() {
         <div className="flex items-baseline gap-3">
           <h1 className="text-xl font-bold text-primary">今天</h1>
           <span className="text-xs text-tertiary font-mono">
-            {todayIso()} {formatWeekday(todayIso())}
+            {today} {formatWeekday(today)}
           </span>
         </div>
       </div>
 
-      {/* 1. Yesterday story card */}
-      <StoryCard
-        summary={summary}
-        fallbackMetrics={fallbackMetrics}
-        loading={summaryLoading}
-        onDeepDive={goToUsage}
-        hasAiKey={hasAiKey}
-        agents={agents}
-        onGenerate={async () => {
-          const outcome = await invoke<SummaryOutcome>("generate_daily_summary", { date: yesterday });
-          if (outcome.status === "generated") {
-            setSummary(outcome.summary);
-            showSuccess("摘要生成成功");
-          } else if (outcome.status === "no_key") {
-            showInfo("配置 AI 模型后可自动生成");
-          } else if (outcome.status === "no_sessions") {
-            showInfo("昨日无会话，无需生成摘要");
-          } else {
-            showError(outcome.reason ?? "生成失败");
-          }
-        }}
-        onGoSettings={goToAiSettings}
-      />
+      {/* 1. Dual story cards: today (live) hero + yesterday (complete digest). */}
+      <div className="space-y-3">
+        <SummaryCard
+          dateKind="today"
+          badge="今天 · 进行中"
+          emptyText="今天还没有会话。开始与 Agent 协作，这张卡片会实时长出来。"
+          generateLabel="生成今日摘要"
+          deepDiveLabel="实时数据 → 洞察档案"
+          summary={todaySummary}
+          fallbackMetrics={todayFallback}
+          loading={todaySummaryLoading}
+          ensuring={todayEnsuring}
+          onDeepDive={goToUsage}
+          hasAiKey={hasAiKey}
+          agents={agents}
+          onGenerate={async () => {
+            const outcome = await invoke<SummaryOutcome>("generate_daily_summary", { date: today });
+            if (outcome.status === "generated") {
+              setTodaySummary(outcome.summary);
+              showSuccess("摘要生成成功");
+            } else if (outcome.status === "no_key") {
+              showInfo("配置 AI 模型后可自动生成");
+            } else if (outcome.status === "no_sessions") {
+              showInfo("今天还没有会话，无法生成摘要");
+            } else {
+              showError(outcome.reason ?? "生成失败");
+            }
+          }}
+          onGoSettings={goToAiSettings}
+        />
+
+        <SummaryCard
+          dateKind="yesterday"
+          badge={`昨天 · ${monthDay(yesterday)} · AI 记下了这些`}
+          emptyText="昨天没有采集到会话数据。今天与 Agent 协作后，明晚会在这里看到完整日报。"
+          generateLabel="生成昨日摘要"
+          deepDiveLabel="深挖 → 洞察档案"
+          summary={summary}
+          fallbackMetrics={fallbackMetrics}
+          loading={summaryLoading}
+          onDeepDive={goToUsage}
+          hasAiKey={hasAiKey}
+          agents={agents}
+          onGenerate={async () => {
+            const outcome = await invoke<SummaryOutcome>("generate_daily_summary", { date: yesterday });
+            if (outcome.status === "generated") {
+              setSummary(outcome.summary);
+              showSuccess("摘要生成成功");
+            } else if (outcome.status === "no_key") {
+              showInfo("配置 AI 模型后可自动生成");
+            } else if (outcome.status === "no_sessions") {
+              showInfo("昨日无会话，无需生成摘要");
+            } else {
+              showError(outcome.reason ?? "生成失败");
+            }
+          }}
+          onGoSettings={goToAiSettings}
+        />
+      </div>
 
       {/* 2. Pending discoveries strip */}
       {discoveries !== null && discoveries.length > 0 && (
@@ -505,7 +640,22 @@ export default function Today() {
       </section>
 
       {/* 4. Health bar (P3 review: sync health → live skill-index health) */}
-      <HealthBar indexRows={indexRows} sources={collectionSources} onRefreshIndex={refreshIndex} refreshing={refreshingIndex} />
+      <HealthBar
+        indexRows={indexRows}
+        sources={collectionSources}
+        onRefreshIndex={refreshIndex}
+        refreshing={refreshingIndex}
+        onOpenBroken={() => setBrokenDialogOpen(true)}
+      />
+
+      {/* P-今天: dangling-link inventory + one-click cleanup. */}
+      <BrokenSkillsDialog
+        open={brokenDialogOpen}
+        rows={brokenRows}
+        cleaning={cleaningBroken}
+        onClose={() => setBrokenDialogOpen(false)}
+        onClean={handleCleanBroken}
+      />
     </div>
   );
 }
@@ -545,38 +695,38 @@ function OnboardingStep({
   );
 }
 
-function StoryCard({
+function SummaryCard({
+  dateKind,
+  badge,
+  emptyText,
+  generateLabel,
+  deepDiveLabel,
   summary,
   fallbackMetrics,
   loading,
+  ensuring = false,
   onDeepDive,
   hasAiKey,
   agents,
   onGenerate,
   onGoSettings,
 }: {
+  dateKind: "today" | "yesterday";
+  badge: string;
+  emptyText: string;
+  generateLabel: string;
+  deepDiveLabel: string;
   summary: DailySummary | null;
   fallbackMetrics: WindowMetrics | null;
   loading: boolean;
+  ensuring?: boolean;
   onDeepDive: () => void;
   hasAiKey: boolean;
   agents: Agent[];
   onGenerate: () => Promise<void>;
   onGoSettings: () => void;
 }) {
-  if (loading) {
-    return (
-      <Card className="p-5">
-        <div className="space-y-3">
-          <div className="h-3 w-24 rounded bg-tertiary/50" />
-          <div className="h-4 w-full rounded bg-tertiary/50" />
-          <div className="h-4 w-2/3 rounded bg-tertiary/50" />
-        </div>
-      </Card>
-    );
-  }
-
-  const hasSummary = summary && (summary.highlights.length > 0 || summary.activities.length > 0);
+  // Hooks live above every early return (the old StoryCard broke this rule).
   const [generating, setGenerating] = useState(false);
   const [genHint, setGenHint] = useState<string | null>(null);
 
@@ -590,6 +740,20 @@ function StoryCard({
       setGenerating(false);
     }
   };
+
+  if (loading) {
+    return (
+      <Card className="p-5">
+        <div className="space-y-3">
+          <div className="h-3 w-24 rounded bg-tertiary/50" />
+          <div className="h-4 w-full rounded bg-tertiary/50" />
+          <div className="h-4 w-2/3 rounded bg-tertiary/50" />
+        </div>
+      </Card>
+    );
+  }
+
+  const hasSummary = summary && (summary.highlights.length > 0 || summary.activities.length > 0);
 
   if (!hasSummary) {
     const scale = fallbackMetrics?.token_dimension?.scale;
@@ -608,26 +772,34 @@ function StoryCard({
       return (
         <Card className="p-5">
           <div className="text-2xs font-mono uppercase tracking-wider text-tertiary mb-2">
-            昨日 · {formatDateLabel(yesterdayIso())}
+            {badge}
           </div>
-          <p className="text-base text-primary">
-            昨天还没有采集到会话数据。今天与 Agent 协作后，明早会在这里看到日报。
-          </p>
+          <p className="text-base text-primary">{emptyText}</p>
         </Card>
       );
     }
 
-    // SPEC-F4 T7: rule-based narrative when no LLM is configured.
-    const narrative = hasAiKey
-      ? `昨天共 ${sessions} 次会话。AI 摘要尚未生成。`
-      : `昨天与 ${agentCount} 个 Agent 协作 ${sessions} 次会话，消耗 ${formatNumber(tokens)} token。${
-          mostActiveProject ? `最活跃的项目是「${mostActiveProject}」。` : ""
-        }`;
+    // Raw-numbers narrative while the digest is missing. The two date kinds
+    // must read differently — both cards render side by side with the same
+    // mocked metrics in tests, so the yesterday wording is load-bearing.
+    const narrative =
+      dateKind === "today"
+        ? hasAiKey
+          ? `今天已协作 ${sessions} 次会话，AI 摘要待生成。`
+          : `今天与 Agent 已协作 ${sessions} 次会话、${formatNumber(tokens)} token${
+              mostActiveProject ? `，当前最活跃「${mostActiveProject}」` : ""
+            }。`
+        : hasAiKey
+          ? `昨天共 ${sessions} 次会话。AI 摘要尚未生成。`
+          : `昨天与 ${agentCount} 个 Agent 协作 ${sessions} 次会话，消耗 ${formatNumber(tokens)} token。${
+              mostActiveProject ? `最活跃的项目是「${mostActiveProject}」。` : ""
+            }`;
 
     return (
       <Card className="p-5">
         <div className="text-2xs font-mono uppercase tracking-wider text-tertiary mb-2">
-          昨日 · {formatDateLabel(yesterdayIso())}
+          {badge}
+          {ensuring && <span className="ml-2 text-accent normal-case">更新中…</span>}
         </div>
         <p className="text-base text-primary">{narrative}</p>
         {genHint && <p className="mt-2 text-sm text-warning">{genHint}</p>}
@@ -648,7 +820,7 @@ function StoryCard({
               className="ml-auto"
             >
               <Sparkles className="mr-1 h-3 w-3" />
-              生成今日摘要
+              {generateLabel}
             </Button>
           ) : (
             <button onClick={onGoSettings} className="ml-auto text-accent hover:underline">
@@ -669,7 +841,8 @@ function StoryCard({
   return (
     <Card className="p-5">
       <div className="text-2xs font-mono uppercase tracking-wider text-tertiary mb-2">
-        昨日 · {formatDateLabel(yesterdayIso())} · AI 记下了这些
+        {badge}
+        {ensuring && <span className="ml-2 text-accent normal-case">更新中…</span>}
       </div>
       <p className="text-base leading-relaxed text-primary">
         {summary!.highlights[0] ?? `${activities.map((a) => a.summary).join("；")}。`}
@@ -704,7 +877,7 @@ function StoryCard({
           </span>
         )}
         <button onClick={onDeepDive} className="ml-auto text-accent hover:underline">
-          深挖 → 洞察档案
+          {deepDiveLabel}
         </button>
       </div>
     </Card>
@@ -976,11 +1149,13 @@ function HealthBar({
   sources,
   onRefreshIndex,
   refreshing,
+  onOpenBroken,
 }: {
   indexRows: SkillIndexEntry[];
   sources: CollectedSource[];
   onRefreshIndex: () => void;
   refreshing: boolean;
+  onOpenBroken: () => void;
 }) {
   const total = indexRows.filter((r) => r.scope === "global" || r.scope === "project").length;
   const modified = indexRows.filter((r) => r.status === "modified").length;
@@ -995,29 +1170,50 @@ function HealthBar({
 
   return (
     <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-2 text-2xs text-tertiary font-mono">
-      <button
-        onClick={onRefreshIndex}
-        disabled={refreshing}
-        className="inline-flex items-center gap-1.5 hover:text-primary disabled:opacity-50"
-      >
-        {broken > 0 ? (
-          <>
+      {broken > 0 ? (
+        <>
+          {/* P-今天: the broken count is an exit, not a dead end — click to
+              inspect and clean the dangling links. */}
+          <button
+            onClick={onOpenBroken}
+            title="查看并清理失效链接"
+            className="inline-flex items-center gap-1.5 hover:text-primary"
+          >
             <span className="h-1.5 w-1.5 rounded-full bg-danger" />
-            技能索引 <span className="text-danger">{total} · 失效 {broken}</span>
-          </>
-        ) : modified > 0 ? (
-          <>
-            <span className="h-1.5 w-1.5 rounded-full bg-warning" />
-            技能索引 <span className="text-warning">{total} · 修改 {modified}</span>
-          </>
-        ) : (
-          <>
-            <span className="h-1.5 w-1.5 rounded-full bg-success" />
-            技能索引 <span className="text-success">{total}</span>
-          </>
-        )}
-        <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} />
-      </button>
+            技能索引{" "}
+            <span className="text-danger underline decoration-dotted underline-offset-2">
+              {total} · 失效 {broken}
+            </span>
+          </button>
+          <button
+            onClick={onRefreshIndex}
+            disabled={refreshing}
+            className="inline-flex items-center gap-1 hover:text-primary disabled:opacity-50"
+            title="刷新技能索引"
+          >
+            <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} />
+          </button>
+        </>
+      ) : (
+        <button
+          onClick={onRefreshIndex}
+          disabled={refreshing}
+          className="inline-flex items-center gap-1.5 hover:text-primary disabled:opacity-50"
+        >
+          {modified > 0 ? (
+            <>
+              <span className="h-1.5 w-1.5 rounded-full bg-warning" />
+              技能索引 <span className="text-warning">{total} · 修改 {modified}</span>
+            </>
+          ) : (
+            <>
+              <span className="h-1.5 w-1.5 rounded-full bg-success" />
+              技能索引 <span className="text-success">{total}</span>
+            </>
+          )}
+          <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} />
+        </button>
+      )}
 
       {lastCollectedAt ? (
         <span className="inline-flex items-center gap-1.5">
@@ -1036,6 +1232,59 @@ function HealthBar({
         skillmint ok
       </span>
     </div>
+  );
+}
+
+function BrokenSkillsDialog({
+  open,
+  rows,
+  cleaning,
+  onClose,
+  onClean,
+}: {
+  open: boolean;
+  rows: SkillIndexEntry[];
+  cleaning: boolean;
+  onClose: () => void;
+  onClean: () => void;
+}) {
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      disableBackdropClick={cleaning}
+      disableEscape={cleaning}
+      title={`失效的技能链接（${rows.length}）`}
+      description="这些是各 Agent 技能目录里的悬空软链——指向的目标已不在 ~/.agents/skills。清理只移动链接本身（进回收站快照，30 天内可恢复），不触碰任何技能数据。"
+    >
+      <div className="max-h-72 space-y-1.5 overflow-auto">
+        {rows.map((r) => (
+          <div
+            key={r.path}
+            className="rounded-md border border-[var(--border-subtle)] px-2.5 py-1.5"
+          >
+            <div className="text-xs font-medium text-primary">{r.name}</div>
+            <div className="break-all font-mono text-2xs text-tertiary">{r.path}</div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-4 flex items-center gap-2">
+        <Button variant="ghost" size="sm" onClick={onClose} disabled={cleaning}>
+          取消
+        </Button>
+        <Button
+          variant="primary"
+          size="sm"
+          onClick={onClean}
+          loading={cleaning}
+          disabled={cleaning || rows.length === 0}
+          className="ml-auto"
+        >
+          <Trash2 className="mr-1 h-3 w-3" />
+          一键清理（移入回收站）
+        </Button>
+      </div>
+    </Dialog>
   );
 }
 

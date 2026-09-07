@@ -59,6 +59,10 @@ pub struct AppState {
     pub collection_cancel_flags: Mutex<HashMap<String, Arc<AtomicBool>>>,
     /// P0: prevents concurrent manual sync_all_command runs.
     pub sync_all_running: AtomicBool,
+    /// P-今天: in-memory throttle for `ensure_daily_summary` (date → last
+    /// attempt, epoch secs). Bounds how often entering the Today page can
+    /// trigger an LLM digest refresh.
+    pub daily_summary_attempts: Mutex<HashMap<String, u64>>,
     /// The application's data directory (e.g. `~/Library/Application Support/com.skillmint.app`).
     /// Used for snapshots and other app-private storage.
     pub app_dir: PathBuf,
@@ -288,6 +292,7 @@ pub fn run() {
                 scheduler_running: tokio::sync::Mutex::new(HashMap::new()),
                 collection_cancel_flags: Mutex::new(HashMap::new()),
                 sync_all_running: AtomicBool::new(false),
+                daily_summary_attempts: Mutex::new(HashMap::new()),
                 app_dir: app_dir.clone(),
             });
 
@@ -373,6 +378,8 @@ pub fn run() {
 
             // P3-3: rebuild the skill index once at startup (background; the
             // fingerprint check makes it a no-op when nothing changed).
+            // P-今天: the same thread also runs the yesterday-digest catch-up
+            // (补偿「app 错过了夜间 08:00 调度窗口」——调度器只管 app 开着的时候).
             {
                 let db_path = app_dir.join("skillmint.db");
                 let device_id = {
@@ -382,6 +389,11 @@ pub fn run() {
                         Ok(s) => s.device_id.clone(),
                         Err(_) => String::new(),
                     }
+                };
+                let ai_cfg = {
+                    let state = app_handle.state::<AppState>();
+                    let guard = state.settings.lock();
+                    guard.ok().map(|s| s.ai.clone())
                 };
                 if !device_id.is_empty() {
                     std::thread::spawn(move || {
@@ -397,6 +409,14 @@ pub fn run() {
                                     }
                                     Ok(None) => {}
                                     Err(e) => eprintln!("[startup-index] rebuild failed: {e}"),
+                                }
+                                if let Some(cfg) = ai_cfg {
+                                    let db = std::sync::Mutex::new(db);
+                                    if let Some(msg) =
+                                        commands::catch_up_yesterday_summary(&db, &cfg)
+                                    {
+                                        eprintln!("[startup-digest] {msg}");
+                                    }
                                 }
                             }
                             Err(e) => eprintln!("[startup-index] failed to open db: {e}"),
@@ -667,6 +687,10 @@ pub fn run() {
             commands::get_skill_index,
             commands::skill_index_stale,
             commands::read_skill_index_content,
+            commands::clean_broken_skill_links,
+            // P-今天: dual story cards (today live + yesterday) + active-day streak
+            commands::ensure_daily_summary,
+            commands::list_active_days,
             commands::hub_create_skill,
             commands::hub_collect_skill,
             commands::hub_status_cmd,

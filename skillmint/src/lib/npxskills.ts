@@ -158,6 +158,16 @@ export function readSkillIndexContent(skillMdPath: string) {
   return invoke<string>("read_skill_index_content", { skillMdPath });
 }
 
+/** P-今天: one-click cleanup of dangling skill symlinks (moved to the trash snapshots). */
+export interface CleanBrokenLinksResult {
+  cleaned: number;
+  skipped: number;
+}
+
+export function cleanBrokenSkillLinks() {
+  return invoke<CleanBrokenLinksResult>("clean_broken_skill_links");
+}
+
 // ---- private hub ----------------------------------------------------------
 
 export function hubCreateSkill(scope: string, projectRoot: string | null, name: string, description: string) {

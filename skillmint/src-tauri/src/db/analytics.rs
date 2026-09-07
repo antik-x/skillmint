@@ -221,6 +221,48 @@ impl Db {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// P-今天：某天的最后活跃时刻（epoch secs）——当天缓存日报的新鲜度标尺。
+    /// 用 end_time（缺则退回 start_time）取 MAX，过滤口径与
+    /// `query_sessions_for_day` 完全一致。
+    pub fn day_last_activity(&self, date: &str) -> Result<Option<u64>> {
+        let row: Option<i64> = self.conn.query_row(
+            "SELECT MAX(COALESCE(end_time, start_time)) FROM collected_sessions
+             WHERE date(start_time, 'unixepoch', 'localtime') = ?1
+               AND start_time IS NOT NULL
+               AND IFNULL(origin, 'user') != 'skillmint_acp'",
+            params![date],
+            |row| row.get(0),
+        )?;
+        Ok(row.filter(|n| *n > 0).map(|n| n as u64))
+    }
+
+    /// P-今天：某天缓存日报行的 created_at（无则 None）。
+    pub fn get_daily_summary_created_at(&self, date: &str) -> Result<Option<u64>> {
+        let row: Option<i64> = self.conn.query_row(
+            "SELECT created_at FROM digest_summary WHERE date = ?1",
+            params![date],
+            |row| row.get(0),
+        )?;
+        Ok(row.filter(|n| *n > 0).map(|n| n as u64))
+    }
+
+    /// P-今天：「连续记录天数」口径——区间内（含端点）至少有一场采集会话的
+    /// 本地日历日。按真实活跃计，与日报是否生成过无关。
+    pub fn list_active_days(&self, start_date: &str, end_date: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT d FROM (
+                 SELECT date(start_time, 'unixepoch', 'localtime') AS d
+                 FROM collected_sessions
+                 WHERE start_time IS NOT NULL
+                   AND IFNULL(origin, 'user') != 'skillmint_acp'
+             )
+             WHERE d >= ?1 AND d <= ?2
+             ORDER BY d",
+        )?;
+        let rows = stmt.query_map(params![start_date, end_date], |row| row.get(0))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     /// PRD-08 §3.6 (P1): persist a generated daily summary (replace by date).
     /// P5：provider/model 反映真实执行者（acp:<连接名> / cloud:<模型id> /
     /// local），不再硬编码 'skillmint'。

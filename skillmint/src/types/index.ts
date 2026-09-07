@@ -760,6 +760,13 @@ export type SummaryOutcome =
   | { status: "no_sessions" }
   | { status: "failed"; reason: string };
 
+/** P-今天: outcome of ensure_daily_summary (idempotent refresh for the dual story cards). */
+export type EnsureSummaryOutcome =
+  | { status: "fresh" }
+  | { status: "generated"; summary: DailySummary }
+  | { status: "no_sessions" }
+  | { status: "failed"; reason: string };
+
 /** M1: a discovery candidate surfaced by the analysis pipeline. */
 export type DiscoveryKind =
   | "repeat_pattern"

@@ -162,6 +162,18 @@ pub fn build_registry() -> HashMap<TaskKind, TaskExecutor> {
                 let d = chrono::Local::now() - chrono::Duration::days(1);
                 d.format("%Y-%m-%d").to_string()
             };
+            // 调度触发是幂等打底：昨日摘要已存在就不重复生成（避免每晚重复
+            // 烧一次 LLM）；「重新生成」永远走 UI 的 generate_daily_summary 命令。
+            {
+                let db = state.db.lock().map_err(|e| e.to_string())?;
+                if db
+                    .get_daily_summary(&yesterday)
+                    .map_err(|e| e.to_string())?
+                    .is_some()
+                {
+                    return Ok("昨日摘要已存在，跳过".to_string());
+                }
+            }
             let outcome =
                 crate::analyzer::generate_daily_summary(&state.db, &yesterday, &cfg).map_err(|e| e.to_string())?;
             match outcome {

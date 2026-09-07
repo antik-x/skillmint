@@ -1,6 +1,7 @@
 use std::str::FromStr;
 use std::time::Duration;
 
+use chrono::TimeZone;
 use tauri::{AppHandle, Manager};
 use tokio::sync::watch;
 
@@ -127,10 +128,20 @@ async fn tick(app: &AppHandle) -> Result<(), String> {
             }
         }
 
-        let next_run = compute_next_run(&task, now);
-        update_next_run(app, &task.id, next_run).await?;
-
-        let due = next_run.map(|t| t <= now).unwrap_or(false);
+        // Due-ness must come from the persisted next_run_at (seeded on first
+        // sight). Recomputing per tick yields the first occurrence strictly
+        // after *now*, which can never satisfy a `<= now` check — that starved
+        // every cron/interval task since launch (fixed 2026-09). A next_run_at
+        // already in the past doubles as catch-up: a fire missed while the app
+        // was closed runs once on the first tick after launch.
+        let due = match task.next_run_at {
+            Some(at) => at <= now,
+            None => {
+                let next_run = compute_next_run(&task, now);
+                update_next_run(app, &task.id, next_run).await?;
+                false
+            }
+        };
         if !due {
             continue;
         }
@@ -390,8 +401,18 @@ pub fn compute_next_run(task: &ScheduledTask, now: u64) -> Option<u64> {
             }
         }
         ScheduleStrategy::Cron { expression } => {
-            let schedule = cron::Schedule::from_str(expression).ok()?;
-            let after = chrono::DateTime::from_timestamp(now as i64, 0)?;
+            // The `cron` crate demands an explicit seconds field (6-7 fields),
+            // but the app stores 5-field expressions ("0 8 * * *") — parsing
+            // failed silently and left every cron task unseeded (second half
+            // of the dead-scheduler bug, found by the local-clock unit test).
+            let normalized = match expression.split_whitespace().count() {
+                5 => format!("0 {expression}"),
+                _ => expression.clone(),
+            };
+            let schedule = cron::Schedule::from_str(&normalized).ok()?;
+            // Local wall clock: "0 8 * * *" means 08:00 local time, not UTC
+            // (UTC evaluation silently turned the morning digest into 16:00 CST).
+            let after = chrono::Local.timestamp_opt(now as i64, 0).single()?;
             schedule.after(&after).next().map(|dt| dt.timestamp() as u64)
         }
     }

@@ -5964,3 +5964,106 @@ fn interval_next_run_is_future_boundary_after_base() {
     // 到点后自然满足 at <= now（补跑一次），finalize 再推进到下一个边界。
     assert_eq!(next, 1_000 + 30 * 60);
 }
+
+// P-今天 (2026-09-07): "INSERT OR REPLACE scheduled_tasks" fires the
+// task_runs.task_id ON DELETE CASCADE on connections with foreign_keys ON,
+// wiping run history on every finalize. The upsert must be a true
+// ON CONFLICT DO UPDATE. This test forces the pragma on to mirror the
+// real-machine behaviour (probe: real-task_id rows vanished, fake-id rows
+// survived).
+#[test]
+fn upsert_scheduled_task_preserves_run_history() {
+    let (_tmp, db, _settings) = setup_test_env();
+    db.conn()
+        .execute("PRAGMA foreign_keys = ON", [])
+        .unwrap();
+
+    let mut task = crate::models::ScheduledTask {
+        id: "t-cascade".into(),
+        task_kind: crate::models::TaskKind::ScanAgents,
+        name: "scan".into(),
+        description: String::new(),
+        enabled: true,
+        strategy: crate::models::ScheduleStrategy::Interval {
+            value: 1,
+            unit: crate::models::IntervalUnit::Hours,
+        },
+        created_at: 1_000,
+        updated_at: 1_000,
+        last_run_at: None,
+        last_status: None,
+        next_run_at: None,
+        run_count: 0,
+        error_count: 0,
+    };
+    db.upsert_scheduled_task(&task).unwrap();
+
+    let run = crate::models::TaskRun {
+        id: "r-1".into(),
+        task_id: task.id.clone(),
+        status: crate::models::RunStatus::Success,
+        started_at: 2_000,
+        finished_at: Some(2_060),
+        duration_ms: Some(60_000),
+        result_summary: "ok".into(),
+        error_message: None,
+        triggered_by: crate::models::TriggerSource::Schedule,
+    };
+    db.insert_task_run(&run).unwrap();
+
+    // Finalize path: bump counters and persist — this used to cascade-delete r-1.
+    task.last_run_at = Some(2_060);
+    task.last_status = Some(crate::models::RunStatus::Success);
+    task.run_count = 1;
+    task.next_run_at = Some(4_600);
+    db.upsert_scheduled_task(&task).unwrap();
+
+    let runs = db.get_task_runs(&task.id, 10).unwrap();
+    assert_eq!(runs.len(), 1, "run history must survive task upsert");
+    assert_eq!(runs[0].id, "r-1");
+
+    // The task row itself is updated in place.
+    let stored = db.get_scheduled_task(&task.id).unwrap().unwrap();
+    assert_eq!(stored.run_count, 1);
+    assert_eq!(stored.next_run_at, Some(4_600));
+}
+
+/// P6 全量分类直驱（默认忽略）：绕过 UI，直接用应用自身的分类器代码跑真实库。
+/// 用法：先退出 SkillMint（避免双写竞争），然后
+///   cargo test --lib real_classify_all_prompts -- --ignored --nocapture
+/// 配置读真实 settings.json（尊重连接顺序：Claude 优先）。
+#[test]
+#[ignore]
+fn real_classify_all_prompts() {
+    let app_dir = dirs::home_dir()
+        .expect("home")
+        .join("Library/Application Support/com.skillmint");
+    let mut settings = crate::settings::Settings::load_or_default(&app_dir).expect("settings");
+    settings.ai.load_keys();
+    assert!(
+        crate::llm::is_configured(&settings.ai),
+        "AI 未配置：检查 acp_connections/prefer_acp"
+    );
+
+    let mut db = crate::db::Db::new(&app_dir.join("skillmint.db")).expect("open db");
+    db.init(&settings.device_id).expect("init db");
+
+    let before = db.count_unclassified_prompts(None).expect("count");
+    println!("[classify-all] 开始：待分类 {before} 条");
+    let started = std::time::Instant::now();
+    let result = crate::classifier::classify_prompts(
+        &std::sync::Mutex::new(db),
+        None,
+        &settings.ai,
+        None,
+    )
+    .expect("classify run");
+    println!(
+        "[classify-all] 完成：{}/{} 已标注，用时 {:.0}s（skipped_no_key={}）",
+        result.classified,
+        result.eligible,
+        started.elapsed().as_secs_f64(),
+        result.skipped_no_key
+    );
+    assert!(result.classified >= result.eligible.saturating_sub(5), "存在大量未标注残留");
+}

@@ -21,7 +21,7 @@ impl Db {
             default_task(TaskKind::ScanAgentDirectories, "Agent 目录 Skill 扫描", "刷新各 Agent 目录下的 Skill 缓存。", ScheduleStrategy::Interval { value: 1, unit: IntervalUnit::Hours }, false),
             default_task(TaskKind::ScanProjects, "项目扫描", "扫描近期使用过的项目并关联到 Agent。", ScheduleStrategy::Interval { value: 1, unit: IntervalUnit::Hours }, false),
             default_task(TaskKind::GenerateKnowledgeGraph, "知识图谱生成", "分析所有 Skill 并生成/更新知识图谱。", ScheduleStrategy::Cron { expression: "0 2 * * *".to_string() }, false),
-            default_task(TaskKind::GenerateDailySummary, "每日 AI 摘要生成", "生成前一日的 AI 工作摘要。", ScheduleStrategy::Cron { expression: "0 8 * * *".to_string() }, false),
+            default_task(TaskKind::GenerateDailySummary, "每日 AI 摘要生成", "生成前一日的 AI 工作摘要。", ScheduleStrategy::Cron { expression: "0 8 * * *".to_string() }, true),
             default_task(TaskKind::SyncRemoteSources, "远程源同步", "拉取已连接远程源的最新 Skill 变更。", ScheduleStrategy::Cron { expression: "0 4 * * *".to_string() }, false),
             default_task(TaskKind::BackupCenterRepo, "Center Repo 备份", "将 Center Repo 打包备份到本地备份目录。", ScheduleStrategy::Cron { expression: "0 2 * * 0".to_string() }, false),
             default_task(TaskKind::RunDiscoveryPipeline, "发现管线", "运行发现管线，从采集数据中识别高价值发现。", ScheduleStrategy::Cron { expression: "30 7 * * *".to_string() }, false),
@@ -60,13 +60,34 @@ impl Db {
 
     pub fn upsert_scheduled_task(&self, task: &ScheduledTask) -> Result<()> {
         let (kind, value, unit, expr) = strategy_to_db(&task.strategy);
+        // Must be a real upsert (ON CONFLICT DO UPDATE), NOT "INSERT OR
+        // REPLACE": REPLACE is DELETE+INSERT, and the DELETE of the parent row
+        // fires `task_runs.task_id ... ON DELETE CASCADE`, silently wiping the
+        // task's entire run history on every finalize (found 2026-09-07 once
+        // the engine actually started finishing runs).
         self.conn.execute(
-            r#"INSERT OR REPLACE INTO scheduled_tasks
+            r#"INSERT INTO scheduled_tasks
                (id, task_kind, name, description, enabled, strategy_kind,
                 strategy_value, strategy_unit, strategy_expression,
                 created_at, updated_at, last_run_at, last_status,
                 next_run_at, run_count, error_count)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"#,
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+               ON CONFLICT(id) DO UPDATE SET
+                 task_kind = excluded.task_kind,
+                 name = excluded.name,
+                 description = excluded.description,
+                 enabled = excluded.enabled,
+                 strategy_kind = excluded.strategy_kind,
+                 strategy_value = excluded.strategy_value,
+                 strategy_unit = excluded.strategy_unit,
+                 strategy_expression = excluded.strategy_expression,
+                 created_at = excluded.created_at,
+                 updated_at = excluded.updated_at,
+                 last_run_at = excluded.last_run_at,
+                 last_status = excluded.last_status,
+                 next_run_at = excluded.next_run_at,
+                 run_count = excluded.run_count,
+                 error_count = excluded.error_count"#,
             params![
                 task.id,
                 task.task_kind.to_string(),

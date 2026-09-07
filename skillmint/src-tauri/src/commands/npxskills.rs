@@ -445,6 +445,97 @@ pub fn read_skill_index_content(skill_md_path: String) -> Result<String, String>
     std::fs::read_to_string(&skill_md_path).map_err(|e| format!("无法读取 {}：{e}", skill_md_path))
 }
 
+/// P-今天：一键清理失效（悬空）技能软链的出口。每条 broken 行先复验「确实是
+/// 软链且目标不存在」再动手；链接本体移入回收站快照（~/.skillmint/trash，
+/// 可恢复，30 天后随常规清理过期），随后重建全局索引让计数即时归零。
+/// 绝不触碰链接目标以外的文件；非软链或已消失的条目一律跳过。
+#[derive(Debug, serde::Serialize)]
+pub struct CleanBrokenLinksResult {
+    pub cleaned: usize,
+    pub skipped: usize,
+}
+
+#[tauri::command(async)]
+pub fn clean_broken_skill_links(
+    state: State<'_, AppState>,
+) -> Result<CleanBrokenLinksResult, String> {
+    let rows = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        db.list_skill_index("-", None).map_err(|e| e.to_string())?
+    };
+
+    // 复验 + 移动（无锁快路径；rename 只移动链接本体，不解引用目标）。
+    let trash_root = crate::hub::global_hub_dir()
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("trash");
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let snapshot_root = trash_root.join(format!("skill-links-{stamp}"));
+
+    let now = super::current_timestamp();
+    let mut moved: Vec<(crate::db::index_store::SkillIndexRow, PathBuf)> = Vec::new();
+    let mut skipped = 0usize;
+    for row in rows.into_iter().filter(|r| r.status == "broken") {
+        let path = PathBuf::from(&row.path);
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(_) => {
+                skipped += 1;
+                continue;
+            }
+        };
+        if !meta.file_type().is_symlink() || path.exists() {
+            skipped += 1;
+            continue;
+        }
+        let agent_dir = path
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".into());
+        let dest_dir = snapshot_root.join(&agent_dir);
+        if std::fs::create_dir_all(&dest_dir).is_err() {
+            skipped += 1;
+            continue;
+        }
+        let dest = dest_dir.join(&row.name);
+        match std::fs::rename(&path, &dest) {
+            Ok(()) => moved.push((row, dest)),
+            Err(_) => skipped += 1,
+        }
+    }
+
+    if moved.is_empty() {
+        return Ok(CleanBrokenLinksResult { cleaned: 0, skipped });
+    }
+
+    // 回收站台账 + 重建索引（短临界区；与 rebuild_skill_index 同锁型）。
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let expires_at = now + crate::hub::TRASH_RETENTION_DAYS * 86400;
+    for (row, dest) in &moved {
+        let metadata = serde_json::json!({
+            "scope": row.scope,
+            "managed_by": row.managed_by,
+            "description": row.description,
+            "reason": "dangling symlink (cleaned from Today health bar)",
+        });
+        let _ = db.insert_trash_item(
+            "skill_link",
+            &row.path,
+            &row.name,
+            &dest.to_string_lossy(),
+            &metadata,
+            now,
+            expires_at,
+        );
+    }
+    index::rebuild(&db, None).map_err(|e| e.to_string())?;
+    Ok(CleanBrokenLinksResult {
+        cleaned: moved.len(),
+        skipped,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Private hub
 // ---------------------------------------------------------------------------
