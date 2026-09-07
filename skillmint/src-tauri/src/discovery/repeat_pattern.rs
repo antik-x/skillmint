@@ -23,44 +23,76 @@ impl super::Detector for RepeatPatternDetector {
             return Ok(Vec::new());
         }
 
-        let normalized: Vec<(String, String, i64)> = prompts
+        // (id, entry, normalized)
+        let normalized: Vec<(String, PromptEntry, String)> = prompts
             .into_iter()
-            .map(|(id, text, ts)| (id, normalize(&text), ts))
-            .filter(|(_, n, _)| !n.is_empty())
+            .map(|(id, text, ts, source)| {
+                let normalized_text = normalize(&text);
+                let entry = PromptEntry {
+                    id,
+                    normalized: normalized_text.clone(),
+                    started_at: ts,
+                    raw: text,
+                    source,
+                };
+                let id = entry.id.clone();
+                (id, entry, normalized_text)
+            })
+            .filter(|(_, e, _)| !e.normalized.is_empty())
             .collect();
 
         let mut clusters: Vec<Vec<PromptEntry>> = Vec::new();
-        for (id, norm, ts) in normalized {
+        for (_, entry, norm) in normalized {
             let mut placed = false;
             for cluster in &mut clusters {
                 let representative = &cluster[0].normalized;
                 if jaccard_3gram(representative, &norm) >= config::REPEAT_JACCARD_THRESHOLD {
-                    cluster.push(PromptEntry { id: id.clone(), normalized: norm.clone(), started_at: ts });
+                    cluster.push(entry.clone());
                     placed = true;
                     break;
                 }
             }
             if !placed {
-                clusters.push(vec![PromptEntry { id, normalized: norm, started_at: ts }]);
+                clusters.push(vec![entry]);
             }
         }
 
         let mut candidates = Vec::new();
         for cluster in clusters {
             if cluster.len() >= config::REPEAT_MIN_PROMPTS {
+                // P6：标题用原文首行（normalize 会把多行压平、代码/路径替换成占位符，
+                // 观感是"拼接的一坨"——真机反馈 2026-09-07）；归一化文本只用于去重键。
                 let earliest = cluster.iter().min_by_key(|e| e.started_at).cloned().unwrap_or_else(|| cluster[0].clone());
-                let representative_text = truncate(&earliest.normalized, 120);
+                let title_text = truncate(&first_line(&earliest.raw), 80);
                 let dedup = repeat_dedup_key(&earliest.normalized);
                 let confidence = (cluster.len() as f64 / config::REPEAT_CONFIDENCE_DENOMINATOR).min(1.0);
                 let prompt_ids: Vec<String> = cluster.iter().map(|e| e.id.clone()).collect();
 
+                // P6：证据原文（最新 3 条），Inbox 卡默认展示前 2 条——
+                // 此前后端从不写 payload.evidence，前端证据区恒为空（契约缺口）。
+                let mut latest: Vec<&PromptEntry> = cluster.iter().collect();
+                latest.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+                let evidence: Vec<serde_json::Value> = latest
+                    .into_iter()
+                    .take(3)
+                    .map(|e| {
+                        serde_json::json!({
+                            "prompt_text": truncate(&first_line(&e.raw), 200),
+                            "started_at": e.started_at,
+                            "source": e.source,
+                            "session_id": e.id,
+                        })
+                    })
+                    .collect();
+
                 candidates.push(DiscoveryCandidate {
                     kind: DiscoveryKind::RepeatPattern,
-                    title: format!("重复模式：{}", representative_text),
+                    title: format!("重复模式：{}", title_text),
                     payload: serde_json::json!({
-                        "pattern": representative_text,
+                        "pattern": truncate(&earliest.normalized, 120),
                         "prompt_ids": prompt_ids,
                         "count": cluster.len(),
+                        "evidence": evidence,
                     }),
                     confidence,
                     dedup_key: dedup,
@@ -72,16 +104,26 @@ impl super::Detector for RepeatPatternDetector {
     }
 }
 
+/// 原文首行（trim 后）；空则回退全文。
+fn first_line(raw: &str) -> String {
+    let line = raw.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or(raw);
+    line.to_string()
+}
+
 #[derive(Clone)]
 struct PromptEntry {
     id: String,
     normalized: String,
     started_at: i64,
+    /// 原文（标题/证据用）。
+    raw: String,
+    /// 来源工具（证据行展示用）。
+    source: String,
 }
 
-fn load_prompts(ctx: &DetectContext) -> anyhow::Result<Vec<(String, String, i64)>> {
+fn load_prompts(ctx: &DetectContext) -> anyhow::Result<Vec<(String, String, i64, String)>> {
     let mut stmt = ctx.db.conn_ref().prepare(
-        "SELECT id, prompt_text, IFNULL(started_at, 0), IFNULL(prompt_kind, '')
+        "SELECT id, prompt_text, IFNULL(started_at, 0), IFNULL(prompt_kind, ''), IFNULL(source, '')
          FROM collected_prompts
          WHERE device_id = ?1 AND IFNULL(started_at, 0) >= ?2 AND IFNULL(started_at, 0) <= ?3
            AND prompt_text IS NOT NULL AND length(prompt_text) > 0
@@ -95,6 +137,7 @@ fn load_prompts(ctx: &DetectContext) -> anyhow::Result<Vec<(String, String, i64)
                 row.get::<_, String>(1)?,
                 row.get::<_, i64>(2)?,
                 row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
             ))
         },
     )?;
@@ -102,8 +145,8 @@ fn load_prompts(ctx: &DetectContext) -> anyhow::Result<Vec<(String, String, i64)
     // 规则兜底再判一次，确保历史脏数据（系统提醒等）也被排除。
     Ok(rows
         .filter_map(|r| r.ok())
-        .filter(|(_, text, _, kind)| crate::prompt_kind::is_user_row(kind, text))
-        .map(|(id, text, at, _)| (id, text, at))
+        .filter(|(_, text, _, kind, _)| crate::prompt_kind::is_user_row(kind, text))
+        .map(|(id, text, at, _, source)| (id, text, at, source))
         .collect())
 }
 

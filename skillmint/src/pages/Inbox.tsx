@@ -41,6 +41,22 @@ function discoveryKindLabel(kind: DiscoveryKind): string {
   }
 }
 
+/** P6：每类发现的"要你裁决什么"一句话说明（真机反馈 2026-09-07：卡片看不出要裁决什么）。 */
+function discoveryExplanation(kind: DiscoveryKind): string {
+  switch (kind) {
+    case "repeat_pattern":
+      return "这类输入在近 7 天反复出现。把它沉淀为 Skill 后，下次再遇到可直接复用——「采纳并同步」会生成 Skill 草稿并同步到你启用的 Agent 目录。";
+    case "high_value_prompt":
+      return "这条 Prompt 被评为高价值素材。采纳会基于它生成 Skill 草稿并同步；不确定就拒绝，同类 30 天内不再提示。";
+    case "skill_feedback":
+      return "数据显示该 Skill 与会话效率存在相关性。采纳会据此调整 Skill；拒绝则不再提示。";
+    case "capability_gap":
+      return "多条输入指向同一类尚无对应 Skill 的需求。采纳会生成填补缺口的 Skill 草稿。";
+    default:
+      return "请根据下方证据决定是否采纳为 Skill。";
+  }
+}
+
 function formatEvidenceTime(ts?: number): string {
   if (!ts) return "--";
   const d = new Date(ts * 1000);
@@ -555,6 +571,13 @@ export default function Inbox() {
 
         {/* Title */}
         <h2 className="text-lg font-bold leading-snug text-primary">{current?.title}</h2>
+
+        {/* P6：固定说明——这卡要你裁决什么。 */}
+        {current && (
+          <p className="mt-2 text-xs leading-relaxed text-secondary">
+            {discoveryExplanation(current.kind)}
+          </p>
+        )}
 
         {/* Evidence */}
         <div className="mt-4 space-y-2">

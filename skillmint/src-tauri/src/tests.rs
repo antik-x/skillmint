@@ -5609,3 +5609,92 @@ fn test_is_configured_includes_acp_only() {
     assert!(!crate::llm::has_enabled_acp(&cfg2));
     assert!(!crate::llm::is_configured(&cfg2));
 }
+
+// ---------------------------------------------------------------------------
+// P6：净化 v2 + 高价值口径 + 发现卡证据（真机反馈 2026-09-07）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_high_value_prompts_report_filters_noise() {
+    let (_tmp, db, _settings) = setup_test_env();
+    let insert = |id: &str, text: &str, kind: &str, origin: &str| {
+        db.conn_ref()
+            .execute(
+                "INSERT INTO collected_prompts
+                 (id, device_id, session_id, source, prompt_text, started_at, prompt_kind, origin)
+                 VALUES (?1, 'd1', 's1', 'zcode', ?2, 1700000000, ?3, ?4)",
+                rusqlite::params![id, text, kind, origin],
+            )
+            .unwrap();
+    };
+    // 用户真实重复输入（应上榜）。
+    for i in 0..4 {
+        insert(&format!("hv-u{i}"), "帮我重构 jiapu 家谱的世系图渲染逻辑", "user", "user");
+    }
+    // TodoWrite 系统提醒（non_user，净化前曾霸榜 4056 次）。
+    for i in 0..6 {
+        insert(
+            &format!("hv-n{i}"),
+            "The TodoWrite tool hasn't been used recently. If you're working on tasks",
+            "non_user",
+            "user",
+        );
+    }
+    // ACP 副产品（origin 排除）。
+    for i in 0..5 {
+        insert(&format!("hv-o{i}"), "分析这批 prompt 的四轴语义标签", "user", "skillmint_acp");
+    }
+    // 零信息短输入（长度门槛）。
+    for i in 0..9 {
+        insert(&format!("hv-s{i}"), "hello", "user", "user");
+    }
+
+    let rows = db.get_high_value_prompts(3, 20).unwrap();
+    assert_eq!(rows.len(), 1, "只有真实用户输入上榜：{rows:?}");
+    assert!(rows[0].prompt_text.contains("jiapu"));
+    assert_eq!(rows[0].repeat_count, 4);
+}
+
+#[test]
+fn test_repeat_pattern_candidate_carries_evidence_and_raw_title() {
+    let (_tmp, db, _settings) = setup_test_env();
+    let insert = |id: &str, text: &str, source: &str| {
+        db.conn_ref()
+            .execute(
+                "INSERT INTO collected_prompts
+                 (id, device_id, session_id, source, prompt_text, started_at, prompt_kind, origin)
+                 VALUES (?1, 'd1', 's1', ?2, ?3, 1700000000, 'user', 'user')",
+                rusqlite::params![id, source, text],
+            )
+            .unwrap();
+    };
+    let body = "brief openviking 融入 skillmint 的设计思考\n1 目标\n产出一份中文设计文档";
+    insert("rp-1", body, "codex");
+    insert("rp-2", &format!("{body}\n补充： relations 部分"), "codex");
+    insert("rp-3", &format!("{body}\n补充： scope 部分"), "codex");
+
+    let ctx = crate::discovery::DetectContext {
+        db: &db,
+        device_id: "d1",
+        window_start: 1_699_999_999,
+        window_end: 1_700_000_100,
+    };
+    use crate::discovery::Detector as _;
+    let candidates = crate::discovery::repeat_pattern::RepeatPatternDetector
+        .detect(&ctx)
+        .unwrap();
+    assert_eq!(candidates.len(), 1);
+    let c = &candidates[0];
+    // 标题 = 原文首行（非 normalize 压平）。
+    assert!(
+        c.title.starts_with("重复模式：brief openviking 融入 skillmint 的设计思考"),
+        "标题应为原文首行：{}",
+        c.title
+    );
+    assert!(!c.title.contains("{code}"), "标题不应含 normalize 占位符");
+    // payload.evidence 有真实原文 + 来源。
+    let evid = c.payload["evidence"].as_array().expect("evidence array");
+    assert_eq!(evid.len(), 3);
+    assert_eq!(evid[0]["source"], "codex");
+    assert!(evid[0]["prompt_text"].as_str().unwrap().contains("brief openviking"));
+}

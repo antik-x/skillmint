@@ -41,6 +41,12 @@ impl Db {
     // ----- PRD-02: high-value prompts + suggestion report --------------------
 
     /// Find high-value prompts (repeated >= threshold times) for skill sedimentation.
+    ///
+    /// P6：接净化口径——只统计用户真实输入（prompt_kind=user 且非 ACP 副产品），
+    /// 并把长度门槛从 >4 提到 >=12（挡 "hello"/"你好" 等零信息输入；
+    /// discovery/high_value_prompt 检测器另有归一化后 >=10 的门槛）。
+    /// 根因修复 2026-09-07：该 SQL 原先绕过了 S2.1.4 净化，
+    /// TodoWrite 系统提醒以 4056 次霸榜「高价值 Prompt」。
     pub fn get_high_value_prompts(&self, min_repeat: i64, limit: i64) -> Result<Vec<HighValuePrompt>> {
         // Group by normalized prompt text prefix; count occurrences.
         let mut stmt = self.conn.prepare(
@@ -49,7 +55,9 @@ impl Db {
                       COUNT(*) AS cnt,
                       MAX(session_id) AS sample
                FROM collected_prompts
-               WHERE prompt_text IS NOT NULL AND length(prompt_text) > 4
+               WHERE prompt_text IS NOT NULL AND length(prompt_text) >= 12
+                 AND IFNULL(prompt_kind, 'user') = 'user'
+                 AND IFNULL(origin, 'user') != 'skillmint_acp'
                GROUP BY key, source
                HAVING cnt >= ?1
                ORDER BY cnt DESC

@@ -780,6 +780,10 @@ impl Db {
         self.ensure_column("collected_prompts", "prompt_kind", "TEXT")?;
         self.retag_prompt_kinds()?;
 
+        // P6：给存量 pending 重复模式发现卡回填证据原文 + 原文化标题
+        //（此前 payload.evidence 是前后端契约缺口，Inbox 证据区恒为空）。
+        self.backfill_discovery_evidence()?;
+
         // P5/ACP 防自吞尾：三张采集表打来源标（user | skillmint_acp，NULL 视为
         // user）。老数据无污染（真机核查 2026-09-07），无需数据迁移。见 origin.rs。
         self.ensure_column("collected_sessions", "origin", "TEXT")?;
@@ -899,8 +903,142 @@ impl Db {
         Ok(())
     }
 
+    /// P6（2026-09-07）：存量 pending 重复模式卡回填。此前后端从不写
+    /// payload.evidence（前端证据区恒为空），且标题用 normalize 压平的多行原文
+    /// 观感极差。按 payload.prompt_ids 回查原文，回填 evidence（最新 3 条）并把
+    /// 标题改写为原文首行。一次性，哨兵 discovery_evidence_backfill_v1。
+    fn backfill_discovery_evidence(&self) -> Result<()> {
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )?;
+        let done: bool = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_meta WHERE key = 'discovery_evidence_backfill_v1'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)
+            .unwrap_or(false);
+        if done {
+            return Ok(());
+        }
+
+        let rows: Vec<(String, String)> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, payload FROM discoveries
+                 WHERE status = 'pending' AND kind = 'repeat_pattern'",
+            )?;
+            let mapped = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            mapped.filter_map(|r| r.ok()).collect()
+        };
+
+        let mut fixed = 0usize;
+        for (id, payload_str) in &rows {
+            let payload: serde_json::Value = match serde_json::from_str(payload_str) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            // 已有证据的新卡不动。
+            if payload
+                .get("evidence")
+                .and_then(|e| e.as_array())
+                .map(|a| !a.is_empty())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let ids: Vec<String> = payload
+                .get("prompt_ids")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if ids.is_empty() {
+                continue;
+            }
+
+            // 按 id 回查原文（保留传入顺序——最早优先，标题取第一条）。
+            let mut evid: Vec<serde_json::Value> = Vec::new();
+            let mut title_source: Option<String> = None;
+            for pid in &ids {
+                let row = self.conn.query_row(
+                    "SELECT prompt_text, IFNULL(started_at, 0), IFNULL(source, '')
+                     FROM collected_prompts WHERE id = ?1",
+                    rusqlite::params![pid],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                );
+                if let Ok((text, started_at, source)) = row {
+                    let text = text.unwrap_or_default();
+                    if title_source.is_none() {
+                        title_source = Some(text.clone());
+                    }
+                    if evid.len() < 3 {
+                        evid.push(serde_json::json!({
+                            "prompt_text": text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or(&text).chars().take(200).collect::<String>(),
+                            "started_at": started_at,
+                            "source": source,
+                            "session_id": pid,
+                        }));
+                    }
+                }
+            }
+            if evid.is_empty() {
+                continue;
+            }
+
+            let mut new_payload = payload.clone();
+            new_payload["evidence"] = serde_json::Value::Array(evid);
+            let title_text: String = title_source
+                .as_deref()
+                .map(|t| {
+                    t.lines()
+                        .map(str::trim)
+                        .find(|l| !l.is_empty())
+                        .unwrap_or(t)
+                        .chars()
+                        .take(80)
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            self.conn.execute(
+                "UPDATE discoveries SET title = ?1, payload = ?2 WHERE id = ?3",
+                rusqlite::params![
+                    format!("重复模式：{}", title_text),
+                    serde_json::to_string(&new_payload)?,
+                    id,
+                ],
+            )?;
+            fixed += 1;
+        }
+
+        self.conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('discovery_evidence_backfill_v1', '1')",
+            [],
+        )?;
+        if fixed > 0 {
+            eprintln!("[migrate] discovery evidence backfill: {fixed} pending card(s) updated");
+        }
+        Ok(())
+    }
+
     /// E2-S2.1.4：一次性重打标 collected_prompts.prompt_kind。规则修正后，老数据里
     /// 被误标为 user 的系统注入行（如 TodoWrite 提醒）需按最新规则重算；只跑一次。
+    /// P6：规则扩充后 bump 哨兵到 v2（v1 只锚 4 类前缀，漏了中断/通知/命令脚手架/
+    /// 分析提示词泄漏等，真机截图 2026-09-07），v2 对全表按最新规则重跑一次。
     fn retag_prompt_kinds(&self) -> Result<()> {
         // schema_meta 在部分迁移路径中晚于本调用创建，先确保存在。
         self.conn.execute(
@@ -910,7 +1048,7 @@ impl Db {
         let done: bool = self
             .conn
             .query_row(
-                "SELECT COUNT(*) FROM schema_meta WHERE key = 'prompt_kind_retag_v1'",
+                "SELECT COUNT(*) FROM schema_meta WHERE key = 'prompt_kind_retag_v3'",
                 [],
                 |row| row.get::<_, i64>(0),
             )
@@ -945,7 +1083,7 @@ impl Db {
         }
         self.conn.execute("COMMIT", [])?;
         self.conn.execute(
-            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('prompt_kind_retag_v1', '1')",
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('prompt_kind_retag_v3', '1')",
             [],
         )?;
         eprintln!("[migrate] prompt_kind retag: {changed} row(s) updated of {}", rows.len());

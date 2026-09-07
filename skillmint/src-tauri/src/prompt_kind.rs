@@ -13,13 +13,46 @@ pub const PROMPT_KIND_USER: &str = "user";
 pub const PROMPT_KIND_NON_USER: &str = "non_user";
 
 /// 判定为"非用户输入"的行首特征（trim 后匹配）。协议性注入文本，勿随意增删。
+/// v2（P6）：扩充 harness 注入/命令脚手架/连续会话锚点 + SkillMint 自身分析
+/// 提示词特征（净化上线前经各 CLI 普通会话泄漏进库的老分析 prompt）。
 const NON_USER_PREFIXES: &[&str] = &[
     "<system-reminder>",
     "<local-command-caveat>",
+    "<system_notification>",
+    "<command-name>",
+    "<command-args>",
     // 会话目标 system-reminder 的裸文本变体。
     "Continue working toward the active session goal",
     // Skill 包基座文本（SKILL.md 加载提示）。
     "Base directory for this skill:",
+    // P6：harness 注入 / CLI 事件通知。
+    "[Request interrupted by user",
+    // bash 工具回显（<bash-stdout> 包裹形态，真机榜单 124 次实例）。
+    "<bash-stdout>",
+    "<bash-input>",
+    "<bash-stderr>",
+    // 工具调用回显 / Codex 会话历史注入（真机榜单实例）。
+    "Called the Read tool",
+    "The following is the Codex agent history",
+    "[SYSTEM NOTIFICATION",
+    "(Bash completed with no output)",
+    "DO NOT respond",
+    "The following task has finished",
+    "This session is being continued from a previous conversation",
+    "Continue from where you left off",
+    // P6：slash 命令脚手架（CLI 把 /cmd 展开成 "/cmd cmd <…>" 形态）。
+    "/model ",
+    "/compact ",
+    "/exit ",
+    // P6：SkillMint 自身分析提示词（老会话泄漏；新调用已带 [skillmint-analysis] 哨兵）。
+    "[skillmint-analysis]",
+    "你是一位人机协作语义分析师",
+    "你是一位专业的工程效率分析师",
+    "你是一位工程效率分析师",
+    "你是一位工程经验沉淀助手",
+    // P6：用户环境中其它工具的分析提示词（真机实例 2026-09-07）。
+    "你是一个知识图谱抽取助手",
+    "# Claude Command:",
 ];
 
 /// 判定为"非用户输入"的包含特征（任意位置出现即算，用于被截断/包裹的变体）。
@@ -28,7 +61,12 @@ const NON_USER_PREFIXES: &[&str] = &[
 const NON_USER_CONTAINS: &[&str] = &[
     "<system-reminder>",
     "<local-command-caveat>",
+    "<system_notification>",
+    "<command-name>",
+    "<bash-stdout>",
+    "<bash-input>",
     "The TodoWrite tool hasn",
+    "[skillmint-analysis]",
 ];
 
 /// 图片占位符（多模态消息在文本里的展开形式）。
@@ -110,5 +148,59 @@ mod tests {
         assert!(is_user_prompt("fix the nav regression on the settings page"));
         // 用户引用了系统提醒字样但不是以它开头的注入 —— 保留为用户输入。
         assert!(is_user_prompt("how do I suppress the system-reminder noise?"));
+        // 零价值但真实的输入仍是 user（由高价值路径的最小信息量门槛挡，不撒谎）。
+        assert!(is_user_prompt("hello"));
+        assert!(is_user_prompt("你好"));
+    }
+
+    #[test]
+    fn v2_rules_covers_harness_noise() {
+        // P6 扩充：CLI 事件/中断/工具回显类注入。
+        assert!(is_non_user_prompt("[Request interrupted by user]"));
+        assert!(is_non_user_prompt("(Bash completed with no output)"));
+        assert!(is_non_user_prompt(
+            "<bash-stdout>(Bash completed with no output)</bash-stdout>"
+        ));
+        assert!(is_non_user_prompt("<bash-input>pwd</bash-input>"));
+        assert!(is_non_user_prompt("[Request interrupted by user for tool use]"));
+        assert!(is_non_user_prompt(
+            "Called the Read tool with the following input: {\"file_path\": ...}"
+        ));
+        assert!(is_non_user_prompt(
+            "The following is the Codex agent history added since your last turn"
+        ));
+        assert!(is_non_user_prompt(
+            "[SYSTEM NOTIFICATION - NOT USER INPUT] This is an automated background-task event"
+        ));
+        assert!(is_non_user_prompt(
+            "<system_notification>\nThe following task has finished..."
+        ));
+        assert!(is_non_user_prompt("DO NOT respond"));
+        assert!(is_non_user_prompt(
+            "The following task has finished. If you were already aware, ignore this notification"
+        ));
+        assert!(is_non_user_prompt(
+            "This session is being continued from a previous conversation that ran out of context."
+        ));
+        assert!(is_non_user_prompt("Continue from where you left off."));
+        // slash 命令脚手架。
+        assert!(is_non_user_prompt("/model model </command>"));
+        assert!(is_non_user_prompt("/compact compact <"));
+        assert!(is_non_user_prompt("/exit exit </command>"));
+        // 命令/工具 XML 标签（contains 命中）。
+        assert!(is_non_user_prompt("<command-name>/model</command-name>"));
+        // SkillMint 自身分析提示词（老会话泄漏 + 新哨兵）。
+        assert!(is_non_user_prompt(
+            "你是一位人机协作语义分析师。请对下面每一条 User Prompt 打标签"
+        ));
+        assert!(is_non_user_prompt(
+            "[skillmint-analysis]\n你是一位专业的工程效率分析师……"
+        ));
+        assert!(is_non_user_prompt(
+            "你是一个知识图谱抽取助手。请阅读下面的 SKILL.md，抽取其中的知识图谱结构。"
+        ));
+        assert!(is_non_user_prompt(
+            "# Claude Command: Commit (Git-only) 该命令在不依赖任何包管理器的前提下"
+        ));
     }
 }

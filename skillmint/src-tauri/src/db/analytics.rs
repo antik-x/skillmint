@@ -87,11 +87,12 @@ impl Db {
                            p.duration_ms, p.tool_calls,
                            p.requested_action, p.target_object,
                            p.interaction_state, p.interaction_mode
-                    FROM collected_prompts p
-                    LEFT JOIN collected_sessions s ON s.id = p.session_id
-                    WHERE IFNULL(p.started_at, 0) >= ?1 AND IFNULL(p.started_at, 0) <= ?2
-                      AND (?3 = '' OR p.source = ?3)
-                      AND IFNULL(p.origin, 'user') != 'skillmint_acp'"#;
+               FROM collected_prompts p
+               LEFT JOIN collected_sessions s ON s.id = p.session_id
+               WHERE IFNULL(p.started_at, 0) >= ?1 AND IFNULL(p.started_at, 0) <= ?2
+                 AND (?3 = '' OR p.source = ?3)
+                 AND IFNULL(p.origin, 'user') != 'skillmint_acp'
+                 AND IFNULL(p.prompt_kind, 'user') = 'user'"#;
         let mut stmt = self.conn.prepare(sql)?;
         let src = source.unwrap_or("");
         let rows = stmt.query_map(params![start, end, src], |row| {

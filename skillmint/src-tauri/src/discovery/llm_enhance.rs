@@ -12,7 +12,8 @@ pub fn enhance(candidates: Vec<DiscoveryCandidate>, cfg: &AiConfig) -> anyhow::R
     let system = "你是一位工程经验沉淀助手。请根据下面的候选发现，为每个发现润色一个一句话中文标题，并生成一个 Skill 草稿（name + body）。输出必须是合法 JSON 数组，每个元素包含：title, draft_skill.name, draft_skill.body。不要加 markdown 代码块。";
     let user = format!("候选发现：\n{}", serde_json::to_string_pretty(&candidates)?);
 
-    let outcome = crate::llm::chat_with_outcome(cfg, system, &user);
+    // P6：分析类 system 统一带哨兵（origin.rs 防线 2），走本地 Agent 时副产品可识别。
+    let outcome = crate::llm::chat_with_outcome(cfg, &crate::origin::analysis_system_prompt(system), &user);
     if let Some(content) = outcome.content {
         let clean = crate::llm::strip_codefence(&content);
         let enhanced: Vec<EnhancedItem> = serde_json::from_str(&clean).unwrap_or_default();
@@ -67,7 +68,7 @@ pub fn generate_weekly_report_content(
 
     let context = build_weekly_context(&sessions);
     let system = "你是一位工程效率分析师。请根据本周会话日志生成一份中文周报，包含：projects（每个项目一段进展摘要，数组，元素含 project_id/name/summary）、pitfalls（最多 3 次踩坑/浪费会话，元素含 session_id/title/lesson）、growth（本周新增 Skill 列表、消除的重复模式、accepted/dismissed 数量）。输出合法 JSON，不要 markdown 代码块。";
-    let outcome = crate::llm::chat_with_outcome(cfg, system, &context);
+    let outcome = crate::llm::chat_with_outcome(cfg, &crate::origin::analysis_system_prompt(system), &context);
     if let Some(content) = outcome.content {
         let clean = crate::llm::strip_codefence(&content);
         let parsed: crate::models::WeeklyReportContent = serde_json::from_str(&clean)?;
