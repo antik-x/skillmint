@@ -18,18 +18,22 @@ impl super::Detector for CapabilityGapDetector {
     fn detect(&self, ctx: &DetectContext) -> anyhow::Result<Vec<DiscoveryCandidate>> {
         // Load all prompts in window.
         let mut stmt = ctx.db.conn_ref().prepare(
-            "SELECT prompt_text FROM collected_prompts
+            "SELECT prompt_text, IFNULL(prompt_kind, '') FROM collected_prompts
              WHERE device_id = ?1
                AND IFNULL(started_at, 0) >= ?2 AND IFNULL(started_at, 0) <= ?3
                AND prompt_text IS NOT NULL AND length(prompt_text) > 0",
         )?;
         let rows = stmt.query_map(
             rusqlite::params![ctx.device_id, ctx.window_start, ctx.window_end],
-            |row| row.get::<_, String>(0),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )?;
 
         let mut category_counts: HashMap<&'static str, usize> = HashMap::new();
-        for text in rows.filter_map(|r| r.ok()) {
+        for (text, kind) in rows.filter_map(|r| r.ok()) {
+            // E2-S2.1.4：能力缺口统计只看用户真实输入。
+            if !crate::prompt_kind::is_user_row(&kind, &text) {
+                continue;
+            }
             for key in keywords::match_categories(&text) {
                 *category_counts.entry(key).or_insert(0) += 1;
             }

@@ -772,6 +772,11 @@ impl Db {
         // created by an older build (CREATE TABLE IF NOT EXISTS won't add new columns).
         self.ensure_column("collected_sessions", "project_path", "TEXT")?;
 
+        // E2-S2.1.4 Prompt 净化：打标用户输入 vs 系统/Skill 注入（保留原文可回溯；
+        // 老数据为 NULL，检测器按规则兜底过滤）。见 prompt_kind.rs。
+        self.ensure_column("collected_prompts", "prompt_kind", "TEXT")?;
+        self.retag_prompt_kinds()?;
+
         // PRD-01: extend agents with usage-derived columns.
         self.ensure_column("agents", "last_used_at", "INTEGER")?;
         self.ensure_column("agents", "project_count", "INTEGER DEFAULT 0")?;
@@ -882,6 +887,59 @@ impl Db {
             "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('project_link_hygiene_done', '1')",
             [],
         )?;
+        Ok(())
+    }
+
+    /// E2-S2.1.4：一次性重打标 collected_prompts.prompt_kind。规则修正后，老数据里
+    /// 被误标为 user 的系统注入行（如 TodoWrite 提醒）需按最新规则重算；只跑一次。
+    fn retag_prompt_kinds(&self) -> Result<()> {
+        // schema_meta 在部分迁移路径中晚于本调用创建，先确保存在。
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )?;
+        let done: bool = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_meta WHERE key = 'prompt_kind_retag_v1'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)
+            .unwrap_or(false);
+        if done {
+            return Ok(());
+        }
+
+        let rows: Vec<(String, String)> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id, IFNULL(prompt_text, '') FROM collected_prompts")?;
+            let mapped = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            mapped.filter_map(|r| r.ok()).collect()
+        };
+
+        self.conn.execute("BEGIN IMMEDIATE", [])?;
+        let mut changed = 0usize;
+        for (id, text) in &rows {
+            let kind = if crate::prompt_kind::is_user_prompt(text) {
+                crate::prompt_kind::PROMPT_KIND_USER
+            } else {
+                crate::prompt_kind::PROMPT_KIND_NON_USER
+            };
+            changed += self.conn.execute(
+                "UPDATE collected_prompts SET prompt_kind = ?1 WHERE id = ?2 AND (prompt_kind IS NULL OR prompt_kind != ?1)",
+                rusqlite::params![kind, id],
+            )?;
+        }
+        self.conn.execute("COMMIT", [])?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('prompt_kind_retag_v1', '1')",
+            [],
+        )?;
+        eprintln!("[migrate] prompt_kind retag: {changed} row(s) updated of {}", rows.len());
         Ok(())
     }
 

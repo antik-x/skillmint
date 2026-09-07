@@ -732,3 +732,66 @@ fn c3_cooling_duplicate_window_longer_than_wrong() {
     assert!(!db.is_dedup_cooling("dk:wrong", days_wrong).unwrap(),
         "wrong at 20 days should be past the 14d cooling window");
 }
+
+#[test]
+fn repeat_pattern_excludes_system_injected_prompts() {
+    // E2-S2.1.4：系统提醒/Skill 脚手架不属于用户输入，重复 N 次也不得成为发现。
+    let (_tmp, db) = test_db();
+    let now = now_secs() as i64;
+    let base = now - 86400;
+
+    // 1) 新采集：已打标 non_user 的系统提醒。
+    for i in 0..3 {
+        db.conn_ref()
+            .execute(
+                "INSERT INTO collected_prompts
+                 (id, device_id, session_id, source, prompt_text, started_at, prompt_kind)
+                 VALUES (?1, ?2, ?3, 'claude-code', ?4, ?5, 'non_user')",
+                rusqlite::params![
+                    format!("sys-tagged-{i}"),
+                    DEVICE,
+                    format!("sys-s-{i}"),
+                    "<system-reminder>\nThe TodoWrite tool hasn't been used recently\n</system-reminder>",
+                    base + i,
+                ],
+            )
+            .unwrap();
+    }
+    // 2) 老数据：无标记的系统提醒，靠规则兜底排除。
+    for i in 0..3 {
+        db.conn_ref()
+            .execute(
+                "INSERT INTO collected_prompts
+                 (id, device_id, session_id, source, prompt_text, started_at)
+                 VALUES (?1, ?2, ?3, 'claude-code', ?4, ?5)",
+                rusqlite::params![
+                    format!("sys-legacy-{i}"),
+                    DEVICE,
+                    format!("legacy-s-{i}"),
+                    "Continue working toward the active session goal. Do the work.",
+                    base + 10 + i,
+                ],
+            )
+            .unwrap();
+    }
+    // 3) 用户真实输入重复 3 次 —— 唯一应当被检出的模式。
+    for i in 0..3 {
+        insert_prompt(
+            &db,
+            &format!("rp-user-{i}"),
+            &format!("rp-us-{i}"),
+            "How do I refactor this auth module cleanly?",
+            base + 20 + i,
+        );
+    }
+
+    let detector = RepeatPatternDetector;
+    let candidates = detector.detect(&ctx(&db, now - 7 * 86400, now)).unwrap();
+    assert_eq!(
+        candidates.len(),
+        1,
+        "only the real user pattern may be detected, got: {:?}",
+        candidates.iter().map(|c| c.title.clone()).collect::<Vec<_>>()
+    );
+    assert_eq!(candidates[0].payload["count"].as_u64(), Some(3));
+}

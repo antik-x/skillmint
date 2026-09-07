@@ -20,7 +20,8 @@ impl super::Detector for HighValuePromptDetector {
             r#"SELECT p.id, p.prompt_text, p.session_id,
                       COALESCE(s.message_count, 999),
                       COALESCE(tu.output_tokens, 0),
-                      COALESCE(tu.input_tokens, 0)
+                      COALESCE(tu.input_tokens, 0),
+                      IFNULL(p.prompt_kind, '')
                FROM collected_prompts p
                LEFT JOIN collected_sessions s ON s.id = p.session_id
                LEFT JOIN (
@@ -48,6 +49,7 @@ impl super::Detector for HighValuePromptDetector {
                     row.get::<_, i64>(3)?,
                     row.get::<_, i64>(4)?,
                     row.get::<_, i64>(5)?,
+                    row.get::<_, String>(6)?,
                 ))
             },
         )?;
@@ -58,7 +60,11 @@ impl super::Detector for HighValuePromptDetector {
 
         let mut candidates = Vec::new();
         for row in rows.filter_map(|r| r.ok()) {
-            let (id, text, session_id, message_count, output_tokens, input_tokens) = row;
+            let (id, text, session_id, message_count, output_tokens, input_tokens, kind) = row;
+            // E2-S2.1.4：非用户输入（系统提醒/Skill 脚手架）不构成高价值 Prompt。
+            if !crate::prompt_kind::is_user_row(&kind, &text) {
+                continue;
+            }
             let normalized = crate::discovery::repeat_pattern::normalize(&text);
             if normalized.len() < config::HIGH_VALUE_MIN_PROMPT_LENGTH {
                 continue;

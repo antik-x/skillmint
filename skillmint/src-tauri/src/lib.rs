@@ -26,6 +26,7 @@ mod models;
 mod npx;
 mod openviking;
 mod pricing;
+mod prompt_kind;
 mod remote;
 mod scan;
 mod scheduler;

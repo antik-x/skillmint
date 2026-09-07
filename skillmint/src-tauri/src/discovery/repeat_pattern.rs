@@ -81,16 +81,29 @@ struct PromptEntry {
 
 fn load_prompts(ctx: &DetectContext) -> anyhow::Result<Vec<(String, String, i64)>> {
     let mut stmt = ctx.db.conn_ref().prepare(
-        "SELECT id, prompt_text, IFNULL(started_at, 0)
+        "SELECT id, prompt_text, IFNULL(started_at, 0), IFNULL(prompt_kind, '')
          FROM collected_prompts
          WHERE device_id = ?1 AND IFNULL(started_at, 0) >= ?2 AND IFNULL(started_at, 0) <= ?3
            AND prompt_text IS NOT NULL AND length(prompt_text) > 0",
     )?;
     let rows = stmt.query_map(
         rusqlite::params![ctx.device_id, ctx.window_start, ctx.window_end],
-        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?)),
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        },
     )?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    // E2-S2.1.4：只统计用户真实输入。已打标行按标记过滤；老数据（无标记）按
+    // 规则兜底再判一次，确保历史脏数据（系统提醒等）也被排除。
+    Ok(rows
+        .filter_map(|r| r.ok())
+        .filter(|(_, text, _, kind)| crate::prompt_kind::is_user_row(kind, text))
+        .map(|(id, text, at, _)| (id, text, at))
+        .collect())
 }
 
 /// Lowercase, collapse whitespace, replace code blocks and paths with placeholders.

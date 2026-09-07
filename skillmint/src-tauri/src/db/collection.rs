@@ -266,12 +266,25 @@ impl Db {
     }
 
     pub fn upsert_collected_prompt(&self, p: &CollectedPrompt) -> Result<()> {
+        // E2-S2.1.4：入库即打标（user / non_user），保留原文可回溯。NULL 仅存在于
+        // 打标功能上线前的老数据，检测器读取时会按规则兜底再判一次。
+        let prompt_kind = p
+            .prompt_text
+            .as_deref()
+            .map(|t| {
+                if crate::prompt_kind::is_user_prompt(t) {
+                    crate::prompt_kind::PROMPT_KIND_USER
+                } else {
+                    crate::prompt_kind::PROMPT_KIND_NON_USER
+                }
+            })
+            .unwrap_or(crate::prompt_kind::PROMPT_KIND_NON_USER);
         self.conn.execute(
             r#"INSERT OR REPLACE INTO collected_prompts
                (id, device_id, session_id, source, project_id, prompt_text, started_at,
                 duration_ms, requested_action, target_object, interaction_state,
-                interaction_mode, confidence, tool_calls, tool_errors)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"#,
+                interaction_mode, confidence, tool_calls, tool_errors, prompt_kind)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"#,
             params![
                 p.id,
                 p.device_id,
@@ -288,6 +301,7 @@ impl Db {
                 p.confidence,
                 p.tool_calls,
                 p.tool_errors,
+                prompt_kind,
             ],
         )?;
         Ok(())

@@ -1554,11 +1554,11 @@ pub fn run_discovery_pipeline(state: State<'_, AppState>) -> Result<DiscoveryRun
 
     let result = (|| {
         let mut db = state.db.lock().map_err(|e| e.to_string())?;
-        let cfg = {
+        let (device_id, cfg) = {
             let settings = state.settings.lock().map_err(|e| e.to_string())?;
-            settings.ai.clone()
+            (settings.device_id.clone(), settings.ai.clone())
         };
-        crate::discovery::run_pipeline(&mut db, "", &cfg).map_err(|e| e.to_string())
+        crate::discovery::run_pipeline(&mut db, &device_id, &cfg).map_err(|e| e.to_string())
     })();
 
     let mut guard = discovery_running().lock().map_err(|e| e.to_string())?;

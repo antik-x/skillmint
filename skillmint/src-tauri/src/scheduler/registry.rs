@@ -228,11 +228,12 @@ pub fn build_registry() -> HashMap<TaskKind, TaskExecutor> {
         TaskKind::RunDiscoveryPipeline,
         Arc::new(|state| {
             let mut db = state.db.lock().map_err(|e| e.to_string())?;
-            let cfg = {
+            let (device_id, cfg) = {
                 let settings = state.settings.lock().map_err(|e| e.to_string())?;
-                settings.ai.clone()
+                (settings.device_id.clone(), settings.ai.clone())
             };
-            let result = crate::discovery::run_pipeline(&mut db, "", &cfg).map_err(|e| e.to_string())?;
+            let result = crate::discovery::run_pipeline(&mut db, &device_id, &cfg)
+                .map_err(|e| e.to_string())?;
             Ok(format!("发现管线完成：新增 {} 条，过期 {} 条", result.inserted, result.expired))
         }),
     );
