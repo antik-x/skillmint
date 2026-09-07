@@ -450,18 +450,24 @@ export default function Usage() {
   };
 
   // PRD-08 P1: run the four-axis semantic classifier over unclassified prompts.
-  const handleClassify = async () => {
+  // P5/Q7：支持 limit_batches——「试分类一批」只跑 15 条看效果，避免一次性烧掉
+  // 全量额度；全量按钮不传 limit。
+  const handleClassify = async (limitBatches?: number) => {
     if (classifying) return;
     setClassifying(true);
     setClassifyMsg(null);
     try {
-      const r = await invoke<ClassifyResult>("classify_prompts", { source: null });
+      const r = await invoke<ClassifyResult>("classify_prompts", {
+        source: null,
+        limitBatches: limitBatches ?? null,
+      });
       if (r.skipped_no_key) {
         setClassifyMsg(`未配置 AI，跳过分类（待分类 ${r.eligible} 条）。请在偏好设置配置 AI。`);
       } else if (r.classified === 0) {
         setClassifyMsg("没有待分类的 Prompt（已全部分类）。");
       } else {
-        setClassifyMsg(`分类完成：${r.classified} / ${r.eligible} 条已标注。`);
+        const scope = limitBatches ? `（试分类一批）` : "";
+        setClassifyMsg(`分类完成${scope}：${r.classified} / ${r.eligible} 条已标注。`);
         await loadWindowMetrics(winKind, winRef); // refresh distributions
       }
     } catch (err) {
@@ -645,11 +651,20 @@ export default function Usage() {
               {/* PRD-08 P1: trigger the LLM classifier for the four axes. */}
               <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-[var(--border-subtle)] pt-3">
                 <button
-                  onClick={handleClassify}
+                  onClick={() => handleClassify(1)}
                   disabled={classifying}
                   className="rounded-lg bg-accent/20 px-3 py-1.5 text-xs text-accent hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
+                  title="只跑一批（15 条）看效果，消耗最小额度"
                 >
-                  {classifying ? "分类中…" : "语义分类（LLM）"}
+                  {classifying ? "分类中…" : "试分类一批（15 条）"}
+                </button>
+                <button
+                  onClick={() => handleClassify()}
+                  disabled={classifying}
+                  className="rounded-lg bg-accent/20 px-3 py-1.5 text-xs text-accent hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
+                  title="全量分类所有待分类 Prompt——注意会按 15 条/批连续调用本地 Agent，消耗真实额度"
+                >
+                  {classifying ? "分类中…" : "语义分类（全量）"}
                 </button>
                 {classifyMsg && <span className="text-xs text-secondary">{classifyMsg}</span>}
               </div>

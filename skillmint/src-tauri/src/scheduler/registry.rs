@@ -143,7 +143,7 @@ pub fn build_registry() -> HashMap<TaskKind, TaskExecutor> {
                 crate::kg::analyze_all_skills(&db, &device_id, &center_repo).map_err(|e| e.to_string())?
             };
             // P5：分类器接收 &Mutex<Db>，LLM/ACP 调用在锁外。
-            let classify = crate::classifier::classify_prompts(&state.db, None, &cfg).map_err(|e| e.to_string())?;
+            let classify = crate::classifier::classify_prompts(&state.db, None, &cfg, None).map_err(|e| e.to_string())?;
             Ok(format!(
                 "生成 {} 个节点 / {} 条边，分类 {} / {} 条 prompt",
                 nodes, edges, classify.classified, classify.eligible

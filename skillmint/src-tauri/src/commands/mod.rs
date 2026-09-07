@@ -840,6 +840,7 @@ pub fn get_window_metrics(
 #[tauri::command]
 pub async fn classify_prompts(
     source: Option<String>,
+    limit_batches: Option<usize>,
     app: AppHandle,
 ) -> Result<crate::classifier::ClassifyResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -849,7 +850,8 @@ pub async fn classify_prompts(
             settings.ai.clone()
         };
         let src = source.as_deref().filter(|s| !s.is_empty());
-        crate::classifier::classify_prompts(&state.db, src, &cfg).map_err(|e| e.to_string())
+        crate::classifier::classify_prompts(&state.db, src, &cfg, limit_batches)
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("分类任务失败: {e}"))?

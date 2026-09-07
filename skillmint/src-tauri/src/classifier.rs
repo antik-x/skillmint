@@ -55,6 +55,7 @@ pub fn classify_prompts(
     db: &Mutex<Db>,
     source: Option<&str>,
     cfg: &AiConfig,
+    limit_batches: Option<usize>,
 ) -> anyhow::Result<ClassifyResult> {
     if !llm::is_configured(cfg) {
         // No LLM key → skip entirely, report the eligible count for visibility.
@@ -73,6 +74,11 @@ pub fn classify_prompts(
         let d = db.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
         d.load_unclassified_prompts(source)?
     };
+    // 额度优先（Q7）：limit_batches 限制本次跑的批数（1 批 = BATCH_SIZE 条），
+    // 供「先试一批看效果」——全量跑传 None。
+    if let Some(max_batches) = limit_batches {
+        pending.truncate(max_batches * BATCH_SIZE);
+    }
     let eligible = pending.len();
     if eligible == 0 {
         return Ok(ClassifyResult { eligible: 0, classified: 0, skipped_no_key: false });
