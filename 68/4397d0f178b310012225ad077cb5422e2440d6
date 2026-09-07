@@ -1,0 +1,20 @@
+skillmint/src-tauri/src/classifier.rs
+  h_04c00a69eeb820 58,77-81
+skillmint/src-tauri/src/commands/mod.rs
+  h_04c00a69eeb820 843,853-854
+skillmint/src-tauri/src/scheduler/registry.rs
+  h_04c00a69eeb820 146
+skillmint/src/pages/Usage.tsx
+  h_04c00a69eeb820 453-455,460-463,469-470,654-662,665,667
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.6.24",
+  "base_commit_sha": "684397d0f178b310012225ad077cb5422e2440d6",
+  "prompts": {},
+  "humans": {
+    "h_04c00a69eeb820": {
+      "author": "antik-x <jianyong.me@gmail.com>"
+    }
+  }
+}
