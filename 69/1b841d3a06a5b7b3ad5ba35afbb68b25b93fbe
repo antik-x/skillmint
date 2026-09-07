@@ -1,0 +1,14 @@
+skillmint/src-tauri/src/commands/mod.rs
+  h_04c00a69eeb820 950,962-997,1000,1002-1005,1011
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.6.24",
+  "base_commit_sha": "691b841d3a06a5b7b3ad5ba35afbb68b25b93fbe",
+  "prompts": {},
+  "humans": {
+    "h_04c00a69eeb820": {
+      "author": "antik-x <jianyong.me@gmail.com>"
+    }
+  }
+}
