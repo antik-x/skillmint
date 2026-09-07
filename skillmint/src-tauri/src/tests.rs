@@ -5649,10 +5649,59 @@ fn test_high_value_prompts_report_filters_noise() {
         insert(&format!("hv-s{i}"), "hello", "user", "user");
     }
 
-    let rows = db.get_high_value_prompts(3, 20).unwrap();
+    let rows = db.get_high_value_prompt_page(3, 20, 0).unwrap().items;
     assert_eq!(rows.len(), 1, "只有真实用户输入上榜：{rows:?}");
     assert!(rows[0].prompt_text.contains("jiapu"));
     assert_eq!(rows[0].repeat_count, 4);
+}
+
+#[test]
+fn test_high_value_prompt_pagination_and_ignore() {
+    let (_tmp, db, _settings) = setup_test_env();
+    let insert = |id: &str, text: &str| {
+        db.conn_ref()
+            .execute(
+                "INSERT INTO collected_prompts
+                 (id, device_id, session_id, source, prompt_text, started_at, prompt_kind, origin)
+                 VALUES (?1, 'd1', 's1', 'zcode', ?2, 1700000000, 'user', 'user')",
+                rusqlite::params![id, text],
+            )
+            .unwrap();
+    };
+    // 8 组不同 Prompt，各重复 2 次 → 阈值 ≥2 时全部上榜。
+    for i in 0..8 {
+        let text = format!("这是第 {i} 组用于分页测试的高频 Prompt 内容");
+        insert(&format!("pg-a{i}"), &text);
+        insert(&format!("pg-b{i}"), &text);
+    }
+
+    let page1 = db.get_high_value_prompt_page(2, 5, 0).unwrap();
+    assert_eq!(page1.total, 8);
+    assert_eq!(page1.items.len(), 5);
+    assert!(page1.items[0].repeat_count >= page1.items[1].repeat_count);
+
+    let page2 = db.get_high_value_prompt_page(2, 5, 5).unwrap();
+    assert_eq!(page2.items.len(), 3);
+    assert_ne!(page1.items[0].prompt_text, page2.items[0].prompt_text, "两页不应重叠");
+
+    // 忽略第 1 组 → total=7 且不再上榜；恢复 → 回到 8。
+    let first_key = page1.items[0].prompt_text.clone();
+    let first_source = page1.items[0].source.clone().unwrap_or_default();
+    db.ignore_prompt_group(&first_key, &first_source, Some(&first_key))
+        .unwrap();
+
+    let after = db.get_high_value_prompt_page(2, 20, 0).unwrap();
+    assert_eq!(after.total, 7);
+    assert!(after.items.iter().all(|p| p.prompt_text != first_key));
+
+    let ignored = db.list_ignored_prompt_groups().unwrap();
+    assert_eq!(ignored.len(), 1);
+    assert_eq!(ignored[0].group_key, first_key);
+
+    db.unignore_prompt_group(&first_key, &first_source).unwrap();
+    let restored = db.get_high_value_prompt_page(2, 20, 0).unwrap();
+    assert_eq!(restored.total, 8);
+    assert!(db.list_ignored_prompt_groups().unwrap().is_empty());
 }
 
 #[test]

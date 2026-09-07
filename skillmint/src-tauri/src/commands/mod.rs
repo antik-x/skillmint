@@ -1346,11 +1346,50 @@ pub fn remove_project(id: String, state: State<'_, AppState>) -> Result<(), Stri
 #[tauri::command]
 pub fn get_high_value_prompts(
     min_repeat: Option<i64>,
+    offset: Option<i64>,
+    limit: Option<i64>,
     state: State<'_, AppState>,
-) -> Result<Vec<crate::models::HighValuePrompt>, String> {
+) -> Result<crate::models::HighValuePromptPage, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    let min = min_repeat.unwrap_or(3);
-    db.get_high_value_prompts(min, 20).map_err(|e| e.to_string())
+    let min = min_repeat.unwrap_or(2);
+    let limit = limit.unwrap_or(20).clamp(1, 200);
+    let offset = offset.unwrap_or(0).max(0);
+    db.get_high_value_prompt_page(min, limit, offset)
+        .map_err(|e| e.to_string())
+}
+
+/// 忽略一个高频 Prompt 分组（group_key = 列表返回的 prompt_text 原文，即 120 字符前缀）。
+#[tauri::command]
+pub fn ignore_prompt_group(
+    group_key: String,
+    source: Option<String>,
+    prompt_sample: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.ignore_prompt_group(&group_key, source.as_deref().unwrap_or(""), prompt_sample.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+/// 撤销忽略（恢复该分组）。
+#[tauri::command]
+pub fn unignore_prompt_group(
+    group_key: String,
+    source: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.unignore_prompt_group(&group_key, source.as_deref().unwrap_or(""))
+        .map_err(|e| e.to_string())
+}
+
+/// 列出所有被忽略的高频 Prompt 分组（最近忽略在前）。
+#[tauri::command]
+pub fn list_ignored_prompt_groups(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::models::IgnoredPromptGroup>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.list_ignored_prompt_groups().map_err(|e| e.to_string())
 }
 
 /// SPEC-F2 T1: quality gate for turning a prompt into a Skill.
@@ -1562,7 +1601,10 @@ pub fn preview_skill_from_prompt(prompt_text: String) -> Result<SkillPromptPrevi
 #[tauri::command]
 pub fn get_skill_suggestion_report(state: State<'_, AppState>) -> Result<crate::models::SkillSuggestionReport, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    let top_prompts = db.get_high_value_prompts(3, 10).map_err(|e| e.to_string())?;
+    let top_prompts = db
+        .get_high_value_prompt_page(3, 10, 0)
+        .map(|p| p.items)
+        .map_err(|e| e.to_string())?;
     // Underused: skills with 0 attributions; top: skills with most attributions.
     let usage = db.get_skill_usage_summary(0, current_timestamp()).map_err(|e| e.to_string())?;
     let underused_skills = usage

@@ -22,6 +22,7 @@ export type AppTab =
 export type SkillLibrarySubTab = "skills" | "bundles" | "graph" | "discover";
 export type WorkMemorySubTab = "weekly" | "daily";
 export type SettingsSubTab = "preferences" | "dataCollection" | "scheduledTasks" | "dataManagement" | "aiAnalysis" | "about";
+export type UsageSubTab = "overview" | "profile" | "sediment";
 
 /** 旧版 tab key，用于状态迁移或外部持久化值的兼容映射。 */
 type LegacyTab =
@@ -44,6 +45,7 @@ interface AppState {
   skillLibrarySubTab: SkillLibrarySubTab;
   workMemorySubTab: WorkMemorySubTab;
   settingsSubTab: SettingsSubTab;
+  usageSubTab: UsageSubTab;
   selectedSkillId: string | null;
   selectedSkillName: string | null;
   sidebarVisible: boolean;
@@ -59,6 +61,7 @@ interface AppState {
   setSkillLibrarySubTab: (subTab: SkillLibrarySubTab) => void;
   setWorkMemorySubTab: (subTab: WorkMemorySubTab) => void;
   setSettingsSubTab: (subTab: SettingsSubTab) => void;
+  setUsageSubTab: (subTab: UsageSubTab) => void;
   navigateToSettings: (subTab: SettingsSubTab) => void;
   setSelectedSkillId: (id: string | null) => void;
   setSelectedSkillName: (name: string | null) => void;
@@ -149,6 +152,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   skillLibrarySubTab: "skills",
   workMemorySubTab: "weekly",
   settingsSubTab: "preferences",
+  usageSubTab: "overview",
   selectedSkillId: null,
   selectedSkillName: null,
   sidebarVisible: readSidebarDefault(),
@@ -189,6 +193,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSkillLibrarySubTab: (subTab) => set({ skillLibrarySubTab: subTab }),
   setWorkMemorySubTab: (subTab) => set({ workMemorySubTab: subTab }),
   setSettingsSubTab: (subTab) => set({ settingsSubTab: subTab }),
+  setUsageSubTab: (subTab) => set({ usageSubTab: subTab }),
   navigateToSettings: (subTab) => set({ activeTab: "settings", settingsSubTab: subTab }),
   setSelectedSkillId: (id) => set({ selectedSkillId: id }),
   setSelectedSkillName: (name) => set({ selectedSkillName: name }),

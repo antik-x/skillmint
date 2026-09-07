@@ -142,9 +142,7 @@ export default function Settings() {
           {subNavItems.find((i) => i.id === settingsSubTab)?.label}
         </h1>
         {settingsSubTab === "preferences" && <PreferencesPanel />}
-        {settingsSubTab === "dataCollection" && (
-          <DataCollectionPanel compact={false} showPath={true} title="使用数据采集" />
-        )}
+        {settingsSubTab === "dataCollection" && <DataCollectionPanel title="使用数据采集" />}
         {settingsSubTab === "scheduledTasks" && <ScheduledTasks embedded />}
         {settingsSubTab === "dataManagement" && <DataManagementPanel />}
         {settingsSubTab === "aiAnalysis" && <AiSettingsPanel />}

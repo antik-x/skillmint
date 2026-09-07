@@ -494,6 +494,22 @@ pub struct HighValuePrompt {
     pub source: Option<String>,
 }
 
+/// 「高频使用 Prompt」分页结果（分组键 = prompt 前 120 字符 + source）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HighValuePromptPage {
+    pub items: Vec<HighValuePrompt>,
+    pub total: i64,
+}
+
+/// 用户忽略的高频 Prompt 分组（永久生效，可在列表底部恢复）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct IgnoredPromptGroup {
+    pub group_key: String,
+    pub source: Option<String>,
+    pub prompt_sample: Option<String>,
+    pub created_at: u64,
+}
+
 /// A skill-suggestion weekly report.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SkillSuggestionReport {

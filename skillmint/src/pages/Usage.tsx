@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "../lib/invoke";
 import {
+  BookMarked,
   Check,
   FileText,
+  Fingerprint,
+  LayoutDashboard,
   Lightbulb,
   RefreshCw,
   TrendingDown,
@@ -11,14 +14,15 @@ import {
 } from "lucide-react";
 import { showError, showSuccess } from "../stores/toastStore";
 import { useCollectionStore } from "../stores/collectionStore";
-import { useAppStore } from "../stores/appStore";
+import { useAppStore, type UsageSubTab } from "../stores/appStore";
 import { Button } from "../components/ui/Button";
-import DataCollectionPanel from "../components/DataCollectionPanel";
 import { HelpTip } from "../components/ui/HelpTip";
 import { Skeleton, SkeletonList } from "../components/ui/Skeleton";
 import type {
   AgentUsageSummary,
   HighValuePrompt,
+  HighValuePromptPage,
+  IgnoredPromptGroup,
   WindowMetrics,
   Delta,
   EntityMetrics,
@@ -31,6 +35,31 @@ import type {
 
 type DaysOption = 1 | 7 | 30 | 0;
 type WindowKind = "day" | "week" | "month";
+
+/** 经验沉淀 Tab 的列表页大小（与后端默认 LIMIT 一致）。 */
+const HVP_PAGE_SIZE = 20;
+
+/** 使用洞察的三个一级标签页（顶部下划线式，与技能页同款）。 */
+const USAGE_TABS: { id: UsageSubTab; label: string; icon: typeof LayoutDashboard }[] = [
+  { id: "overview", label: "概览", icon: LayoutDashboard },
+  { id: "profile", label: "画像", icon: Fingerprint },
+  { id: "sediment", label: "经验沉淀", icon: BookMarked },
+];
+
+/** 经典页码序列：始终含 1 和末页，当前页 ±1，间隔用 … 占位。 */
+export function pageNumbers(current: number, total: number): (number | "…")[] {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const result: (number | "…")[] = [];
+  let prev = 0;
+  for (let i = 1; i <= total; i++) {
+    if (i === 1 || i === total || Math.abs(i - current) <= 1) {
+      if (prev && i - prev > 1) result.push("…");
+      result.push(i);
+      prev = i;
+    }
+  }
+  return result;
+}
 
 const DAYS_OPTIONS: { value: DaysOption; label: string }[] = [
   { value: 1, label: "今天" },
@@ -374,6 +403,9 @@ export default function Usage() {
   const loadStatus = useCollectionStore((state) => state.loadStatus);
   const startCollect = useCollectionStore((state) => state.startCollect);
 
+  const usageSubTab = useAppStore((state) => state.usageSubTab);
+  const setUsageSubTab = useAppStore((state) => state.setUsageSubTab);
+
   const [usages, setUsages] = useState<AgentUsageSummary[]>([]);
   const [days, setDays] = useState<number>(7);
 
@@ -486,253 +518,280 @@ export default function Usage() {
   const lv = winMetrics?.leverage;
 
   return (
-    <div className="h-full overflow-auto p-8">
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-2xl font-bold">使用洞察</h1>
-        <Button
-          variant="primary"
-          size="sm"
-          onClick={handleCollect}
-          loading={collecting}
-          disabled={collecting}
-        >
-          <RefreshCw className={`h-4 w-4 ${collecting ? "animate-spin" : ""}`} />
-          {collecting ? "采集中…" : "立即采集"}
-        </Button>
-      </div>
-
-      {/* Empty state */}
-      {!hasData ? (
-        <section className="rounded-xl border border-dashed border-[var(--border-subtle)] bg-secondary p-10 text-center">
-          <div className="mb-2 text-lg font-medium text-primary">未发现使用数据</div>
-          <p className="mb-4 text-sm text-tertiary">
-            先用 Claude Code / Codex / ZCode 进行几次对话，再回来点击「立即采集」，即可看到 Token、Prompt、成本与协作画像。
-          </p>
+    <div className="flex h-full flex-col">
+      <div className="border-b border-[var(--border-subtle)] px-8 pt-6">
+        <div className="mb-4 flex items-center justify-between">
+          <h1 className="text-2xl font-bold text-primary">使用洞察</h1>
           <Button
             variant="primary"
-            size="md"
+            size="sm"
             onClick={handleCollect}
             loading={collecting}
             disabled={collecting}
           >
+            <RefreshCw className={`h-4 w-4 ${collecting ? "animate-spin" : ""}`} />
             {collecting ? "采集中…" : "立即采集"}
           </Button>
-        </section>
-      ) : (
-        <>
-          {/* PRD-08 §3.1: window selector + 4 KPI cards with 环比/同比 */}
-          <section className="mb-6 rounded-xl border border-[var(--border-subtle)] bg-secondary p-5">
-            <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
-              <span className="text-secondary">窗口：</span>
-              {(["day", "week", "month"] as WindowKind[]).map((k) => (
-                <button
-                  key={k}
-                  onClick={() => setWinKind(k)}
-                  className={`rounded-lg px-3 py-1 transition-colors ${
-                    winKind === k
-                      ? "bg-accent font-medium text-primary"
-                      : "bg-tertiary text-primary hover:bg-tertiary"
-                  }`}
-                >
-                  {k === "day" ? "日" : k === "week" ? "周" : "月"}
-                </button>
-              ))}
-              <input
-                type="date"
-                value={winRef}
-                onChange={(e) => setWinRef(e.target.value || todayIso())}
-                className="ml-2 rounded-lg border border-[var(--border-prominent)] bg-secondary px-2 py-1 text-primary"
-              />
-              {winMetrics && (
-                <span className="ml-auto text-xs text-tertiary">
-                  {winMetrics.current_window.start} ~ {winMetrics.current_window.end}
-                </span>
-              )}
-            </div>
+        </div>
 
-            {winLoading ? (
-              <div className="py-8 text-center text-sm text-secondary">分析中…</div>
-            ) : winMetrics ? (
-              <>
-                <KpiGrid metrics={winMetrics} />
-                <KpiConclusion />
-              </>
-            ) : (
-              <div className="py-6 text-center text-sm text-tertiary">
-                该窗口暂无数据，试试切换窗口或重新采集。
-              </div>
-            )}
-          </section>
-
-          {/* PRD-08 §3.2: Token dimension (cost profile) */}
-          {td && td.scale && (
-            <section className="mb-6 rounded-xl border border-[var(--border-subtle)] bg-secondary p-5">
-              <h2 className="mb-3 text-lg font-semibold">Token 维度 · 成本画像</h2>
-              <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-sm md:grid-cols-3">
-                <KV label="总 Token" value={formatTokens(td.scale.total_tokens)} />
-                <KV label="Fresh Token" value={formatTokens(td.scale.fresh_tokens)} />
-                <KV label="输入 / 输出" value={`${formatTokens(td.scale.input_tokens)} / ${formatTokens(td.scale.output_tokens)}`} />
-                <KV label="缓存读取" value={formatTokens(td.scale.cache_read_tokens)} />
-                <KV label="缓存命中率" value={`${(td.diagnostics.cache_ratio * 100).toFixed(1)}%`} />
-                <KV label="模型调用" value={String(td.scale.model_calls)} />
-                <KV label="工具调用" value={String(td.scale.tool_calls)} />
-                <KV label="估算成本" value={formatCny(td.cost.est_cost_cny)} />
-                <KV label="计费构成" value={formatBillingMix(td.cost.billing_mix)} />
-              </div>
-              {td.scale.total_tokens > 0 && (
-                <div className="mt-4">
-                  <div className="mb-1 text-xs text-secondary">按平台分布</div>
-                  <DistributionBars data={td.distribution.by_platform} total={td.scale.total_tokens} colors={SEGMENT_COLORS} />
-                </div>
-              )}
-              {td.diagnostics.heavy_sessions.length > 0 && (
-                <div className="mt-3 text-xs text-tertiary">
-                  ⚠ {td.diagnostics.heavy_sessions.length} 个高消耗会话（Top 10%，疑似上下文膨胀）
-                </div>
-              )}
-              {/* Leverage bridge */}
-              {lv && (
-                <div className="mt-4 grid grid-cols-2 gap-x-8 gap-y-2 border-t border-[var(--border-subtle)] pt-3 text-sm md:grid-cols-3">
-                  <KV label="成本杠杆" value={`${lv.leverage_per_cny.toFixed(1)} 产出/元`} hint="分母仅按量成本" />
-                  <KV label="变动成本 / 订阅" value={`${formatCny(lv.variable_cost_cny)} / ${formatCny(lv.subscription_cost_cny)}`} />
-                  <KV label="每 Prompt 成本" value={formatCny(lv.cost_per_prompt_cny)} />
-                </div>
-              )}
-            </section>
-          )}
-
-          {/* PRD-08 §3.3: Prompt semantic dimension (collaboration profile) */}
-          {pd && (
-            <section className="mb-6 rounded-xl border border-[var(--border-subtle)] bg-secondary p-5">
-              <h2 className="mb-3 flex items-center gap-1.5 text-lg font-semibold">
-                Prompt 语义 · 协作画像
-                {/* SPEC-F6 T2: 就地解释「归因」。 */}
-                <HelpTip
-                  ariaLabel="什么是归因"
-                  text="根据会话中的关键词与项目绑定，推断某次使用与哪个 Skill 相关。"
-                />
-              </h2>
-              <div className="mb-3 grid grid-cols-2 gap-x-8 gap-y-2 text-sm md:grid-cols-3">
-                <KV label="Prompt 总数" value={String(pd.penetration.total_prompts)} />
-                <KV label="分类率" value={`${(pd.semantics.classified_ratio * 100).toFixed(0)}%`} />
-                {pd.maturity && (
-                  <>
-                    <KV label="Agent 系数" value={`${pd.maturity.agent_coefficient_min_per_prompt} min/prompt`} />
-                    <KV label="工具调用/Prompt" value={pd.maturity.avg_tool_calls_per_prompt.toFixed(1)} />
-                  </>
-                )}
-                <KV label="质量评分" value={`${pd.quality.score} / 100`} />
-              </div>
-
-              {pd.semantics.classified_ratio > 0 ? (
-                <div className="grid gap-4 md:grid-cols-2">
-                  <SemAxis title="请求动作" data={pd.semantics.requested_action} />
-                  <SemAxis title="目标对象" data={pd.semantics.target_object} />
-                  <SemAxis title="交互状态" data={pd.semantics.interaction_state} />
-                  <SemAxis title="交互模式" data={pd.semantics.interaction_mode} />
-                </div>
-              ) : (
-                <div className="rounded-lg border border-dashed border-[var(--border-subtle)] p-4 text-sm text-tertiary">
-                  四维语义需 LLM 分类（P1）。当前可看 Prompt 数量与成熟度；配置 AI 后重新采集即可填充语义分布。
-                </div>
-              )}
-
-              {pd.quality.improvement_suggestions.length > 0 && (
-                <div className="mt-4 border-t border-[var(--border-subtle)] pt-3">
-                  <div className="mb-2 text-xs font-medium text-secondary"><Lightbulb className="inline h-3.5 w-3.5 mr-1.5" />改进建议</div>
-                  <ul className="list-inside list-disc space-y-1 text-sm text-primary">
-                    {pd.quality.improvement_suggestions.map((s, i) => (
-                      <li key={i}>{s}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {/* PRD-08 P1: trigger the LLM classifier for the four axes. */}
-              <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-[var(--border-subtle)] pt-3">
-                <button
-                  onClick={() => handleClassify(1)}
-                  disabled={classifying}
-                  className="rounded-lg bg-accent/20 px-3 py-1.5 text-xs text-accent hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
-                  title="只跑一批（15 条）看效果，消耗最小额度"
-                >
-                  {classifying ? "分类中…" : "试分类一批（15 条）"}
-                </button>
-                <button
-                  onClick={() => handleClassify()}
-                  disabled={classifying}
-                  className="rounded-lg bg-accent/20 px-3 py-1.5 text-xs text-accent hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
-                  title="全量分类所有待分类 Prompt——注意会按 15 条/批连续调用本地 Agent，消耗真实额度"
-                >
-                  {classifying ? "分类中…" : "语义分类（全量）"}
-                </button>
-                {classifyMsg && <span className="text-xs text-secondary">{classifyMsg}</span>}
-              </div>
-            </section>
-          )}
-
-          {/* PRD-08 §3.4 (P1): tool role profile (heatmap + agent coefficient). */}
-          {winMetrics?.entity_metrics && (
-            <ToolProfileSection em={winMetrics.entity_metrics} kind={winKind} refDate={winRef} />
-          )}
-
-          {/* PRD-08 §3.6 (P1): LLM daily summary. */}
-          {winKind === "day" && <DailySummarySection date={winRef} />}
-
-          {/* Legacy: range switch + per-source breakdown (kept for continuity) */}
-          <div className="mb-4 flex items-center gap-2 text-sm">
-            <span className="text-secondary">总量时间范围：</span>
-            {DAYS_OPTIONS.map((opt) => (
+        <nav className="flex gap-1">
+          {USAGE_TABS.map((item) => {
+            const Icon = item.icon;
+            const isActive = usageSubTab === item.id;
+            return (
               <button
-                key={opt.value}
-                onClick={() => setDays(opt.value)}
-                className={`rounded-lg px-3 py-1 transition-colors ${
-                  isPreset(days) && days === opt.value
-                    ? "bg-accent font-medium text-primary"
-                    : "bg-tertiary text-primary hover:bg-tertiary"
+                key={item.id}
+                onClick={() => setUsageSubTab(item.id)}
+                className={`flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
+                  isActive
+                    ? "border-accent text-accent"
+                    : "border-transparent text-secondary hover:text-primary"
                 }`}
               >
-                {opt.label}
+                <Icon className="h-4 w-4" />
+                {item.label}
               </button>
-            ))}
-          </div>
+            );
+          })}
+        </nav>
+      </div>
 
-          <section className="mb-6 rounded-xl border border-[var(--border-subtle)] bg-secondary">
-            <div className="border-b border-[var(--border-subtle)] px-6 py-4 text-lg font-semibold">
-              按数据源
-            </div>
-            <ul className="divide-y divide-[var(--divider)]">
-              {usages
-                .slice()
-                .sort((a, b) => b.total_tokens - a.total_tokens)
-                .map((u) => (
-                  <li key={u.source} className="flex items-center justify-between px-6 py-4">
-                    <div>
-                      <div className="font-medium">{u.source}</div>
-                      <div className="mt-1 text-xs text-tertiary">
-                        会话 {u.session_count} · Prompt {u.prompt_count} · 输出 {formatTokens(u.output_tokens)}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-lg font-semibold text-accent">
-                        {formatTokens(u.total_tokens)}
-                      </div>
-                      <div className="text-xs text-tertiary">tokens</div>
-                    </div>
-                  </li>
-                ))}
-            </ul>
+      <div className="flex-1 overflow-auto p-8">
+        {/* Empty state */}
+        {!hasData ? (
+          <section className="rounded-xl border border-dashed border-[var(--border-subtle)] bg-secondary p-10 text-center">
+            <div className="mb-2 text-lg font-medium text-primary">未发现使用数据</div>
+            <p className="mb-4 text-sm text-tertiary">
+              先用 Claude Code / Codex / ZCode 进行几次对话，再回来点击「立即采集」，即可看到 Token、Prompt、成本与协作画像。
+            </p>
+            <Button
+              variant="primary"
+              size="md"
+              onClick={handleCollect}
+              loading={collecting}
+              disabled={collecting}
+            >
+              {collecting ? "采集中…" : "立即采集"}
+            </Button>
           </section>
+        ) : (
+          <>
+            {/* ── Tab 1 概览：会话概览（窗口 + KPI）+ 每日摘要 + 按 Agent 数据统计 ── */}
+            {usageSubTab === "overview" && (
+              <>
+                {/* PRD-08 §3.1: window selector + 4 KPI cards with 环比/同比 */}
+                <section className="mb-6 rounded-xl border border-[var(--border-subtle)] bg-secondary p-5">
+                  <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
+                    <span className="text-secondary">窗口：</span>
+                    {(["day", "week", "month"] as WindowKind[]).map((k) => (
+                      <button
+                        key={k}
+                        onClick={() => setWinKind(k)}
+                        className={`rounded-lg px-3 py-1 transition-colors ${
+                          winKind === k
+                            ? "bg-accent font-medium text-primary"
+                            : "bg-tertiary text-primary hover:bg-tertiary"
+                        }`}
+                      >
+                        {k === "day" ? "日" : k === "week" ? "周" : "月"}
+                      </button>
+                    ))}
+                    <input
+                      type="date"
+                      value={winRef}
+                      onChange={(e) => setWinRef(e.target.value || todayIso())}
+                      className="ml-2 rounded-lg border border-[var(--border-prominent)] bg-secondary px-2 py-1 text-primary"
+                    />
+                    {winMetrics && (
+                      <span className="ml-auto text-xs text-tertiary">
+                        {winMetrics.current_window.start} ~ {winMetrics.current_window.end}
+                      </span>
+                    )}
+                  </div>
 
-          {/* High-value prompts → skill generation (PRD-02 FR-4) */}
-          <HighValuePrompts />
-        </>
-      )}
+                  {winLoading ? (
+                    <div className="py-8 text-center text-sm text-secondary">分析中…</div>
+                  ) : winMetrics ? (
+                    <KpiGrid metrics={winMetrics} />
+                  ) : (
+                    <div className="py-6 text-center text-sm text-tertiary">
+                      该窗口暂无数据，试试切换窗口或重新采集。
+                    </div>
+                  )}
+                </section>
 
-      {/* Data source status */}
-      <section className="mt-6">
-        <DataCollectionPanel compact title="采集状态" showPath={false} />
-      </section>
+                {/* PRD-08 §3.6 (P1): LLM daily summary. */}
+                {winKind === "day" && <DailySummarySection date={winRef} />}
+
+                {/* Legacy: range switch + per-source breakdown (kept for continuity) */}
+                <div className="mb-4 flex items-center gap-2 text-sm">
+                  <span className="text-secondary">总量时间范围：</span>
+                  {DAYS_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.value}
+                      onClick={() => setDays(opt.value)}
+                      className={`rounded-lg px-3 py-1 transition-colors ${
+                        isPreset(days) && days === opt.value
+                          ? "bg-accent font-medium text-primary"
+                          : "bg-tertiary text-primary hover:bg-tertiary"
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+
+                <section className="mb-6 rounded-xl border border-[var(--border-subtle)] bg-secondary">
+                  <div className="border-b border-[var(--border-subtle)] px-6 py-4 text-lg font-semibold">
+                    按数据源
+                  </div>
+                  <ul className="divide-y divide-[var(--divider)]">
+                    {usages
+                      .slice()
+                      .sort((a, b) => b.total_tokens - a.total_tokens)
+                      .map((u) => (
+                        <li key={u.source} className="flex items-center justify-between px-6 py-4">
+                          <div>
+                            <div className="font-medium">{u.source}</div>
+                            <div className="mt-1 text-xs text-tertiary">
+                              会话 {u.session_count} · Prompt {u.prompt_count} · 输出 {formatTokens(u.output_tokens)}
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-lg font-semibold text-accent">
+                              {formatTokens(u.total_tokens)}
+                            </div>
+                            <div className="text-xs text-tertiary">tokens</div>
+                          </div>
+                        </li>
+                      ))}
+                  </ul>
+                </section>
+              </>
+            )}
+
+            {/* ── Tab 2 画像：Token 成本画像 + Prompt 语义协作画像 + 工具角色分工 ── */}
+            {usageSubTab === "profile" && (
+              <>
+                {/* PRD-08 §3.2: Token dimension (cost profile) */}
+                {td && td.scale && (
+                  <section className="mb-6 rounded-xl border border-[var(--border-subtle)] bg-secondary p-5">
+                    <h2 className="mb-3 text-lg font-semibold">Token 维度 · 成本画像</h2>
+                    <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-sm md:grid-cols-3">
+                      <KV label="总 Token" value={formatTokens(td.scale.total_tokens)} />
+                      <KV label="Fresh Token" value={formatTokens(td.scale.fresh_tokens)} />
+                      <KV label="输入 / 输出" value={`${formatTokens(td.scale.input_tokens)} / ${formatTokens(td.scale.output_tokens)}`} />
+                      <KV label="缓存读取" value={formatTokens(td.scale.cache_read_tokens)} />
+                      <KV label="缓存命中率" value={`${(td.diagnostics.cache_ratio * 100).toFixed(1)}%`} />
+                      <KV label="模型调用" value={String(td.scale.model_calls)} />
+                      <KV label="工具调用" value={String(td.scale.tool_calls)} />
+                      <KV label="估算成本" value={formatCny(td.cost.est_cost_cny)} />
+                      <KV label="计费构成" value={formatBillingMix(td.cost.billing_mix)} />
+                    </div>
+                    {td.scale.total_tokens > 0 && (
+                      <div className="mt-4">
+                        <div className="mb-1 text-xs text-secondary">按平台分布</div>
+                        <DistributionBars data={td.distribution.by_platform} total={td.scale.total_tokens} colors={SEGMENT_COLORS} />
+                      </div>
+                    )}
+                    {td.diagnostics.heavy_sessions.length > 0 && (
+                      <div className="mt-3 text-xs text-tertiary">
+                        ⚠ {td.diagnostics.heavy_sessions.length} 个高消耗会话（Top 10%，疑似上下文膨胀）
+                      </div>
+                    )}
+                    {/* Leverage bridge */}
+                    {lv && (
+                      <div className="mt-4 grid grid-cols-2 gap-x-8 gap-y-2 border-t border-[var(--border-subtle)] pt-3 text-sm md:grid-cols-3">
+                        <KV label="成本杠杆" value={`${lv.leverage_per_cny.toFixed(1)} 产出/元`} hint="分母仅按量成本" />
+                        <KV label="变动成本 / 订阅" value={`${formatCny(lv.variable_cost_cny)} / ${formatCny(lv.subscription_cost_cny)}`} />
+                        <KV label="每 Prompt 成本" value={formatCny(lv.cost_per_prompt_cny)} />
+                      </div>
+                    )}
+                  </section>
+                )}
+
+                {/* PRD-08 §3.3: Prompt semantic dimension (collaboration profile) */}
+                {pd && (
+                  <section className="mb-6 rounded-xl border border-[var(--border-subtle)] bg-secondary p-5">
+                    <h2 className="mb-3 flex items-center gap-1.5 text-lg font-semibold">
+                      Prompt 语义 · 协作画像
+                      {/* SPEC-F6 T2: 就地解释「归因」。 */}
+                      <HelpTip
+                        ariaLabel="什么是归因"
+                        text="根据会话中的关键词与项目绑定，推断某次使用与哪个 Skill 相关。"
+                      />
+                    </h2>
+                    <div className="mb-3 grid grid-cols-2 gap-x-8 gap-y-2 text-sm md:grid-cols-3">
+                      <KV label="Prompt 总数" value={String(pd.penetration.total_prompts)} />
+                      <KV label="分类率" value={`${(pd.semantics.classified_ratio * 100).toFixed(0)}%`} />
+                      {pd.maturity && (
+                        <>
+                          <KV label="Agent 系数" value={`${pd.maturity.agent_coefficient_min_per_prompt} min/prompt`} />
+                          <KV label="工具调用/Prompt" value={pd.maturity.avg_tool_calls_per_prompt.toFixed(1)} />
+                        </>
+                      )}
+                      <KV label="质量评分" value={`${pd.quality.score} / 100`} />
+                    </div>
+
+                    {pd.semantics.classified_ratio > 0 ? (
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <SemAxis title="请求动作" data={pd.semantics.requested_action} />
+                        <SemAxis title="目标对象" data={pd.semantics.target_object} />
+                        <SemAxis title="交互状态" data={pd.semantics.interaction_state} />
+                        <SemAxis title="交互模式" data={pd.semantics.interaction_mode} />
+                      </div>
+                    ) : (
+                      <div className="rounded-lg border border-dashed border-[var(--border-subtle)] p-4 text-sm text-tertiary">
+                        四维语义需 LLM 分类（P1）。当前可看 Prompt 数量与成熟度；配置 AI 后重新采集即可填充语义分布。
+                      </div>
+                    )}
+
+                    {pd.quality.improvement_suggestions.length > 0 && (
+                      <div className="mt-4 border-t border-[var(--border-subtle)] pt-3">
+                        <div className="mb-2 text-xs font-medium text-secondary"><Lightbulb className="inline h-3.5 w-3.5 mr-1.5" />改进建议</div>
+                        <ul className="list-inside list-disc space-y-1 text-sm text-primary">
+                          {pd.quality.improvement_suggestions.map((s, i) => (
+                            <li key={i}>{s}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* PRD-08 P1: trigger the LLM classifier for the four axes. */}
+                    <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-[var(--border-subtle)] pt-3">
+                      <button
+                        onClick={() => handleClassify(1)}
+                        disabled={classifying}
+                        className="rounded-lg bg-accent/20 px-3 py-1.5 text-xs text-accent hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
+                        title="只跑一批（15 条）看效果，消耗最小额度"
+                      >
+                        {classifying ? "分类中…" : "试分类一批（15 条）"}
+                      </button>
+                      <button
+                        onClick={() => handleClassify()}
+                        disabled={classifying}
+                        className="rounded-lg bg-accent/20 px-3 py-1.5 text-xs text-accent hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-50"
+                        title="全量分类所有待分类 Prompt——注意会按 15 条/批连续调用本地 Agent，消耗真实额度"
+                      >
+                        {classifying ? "分类中…" : "语义分类（全量）"}
+                      </button>
+                      {classifyMsg && <span className="text-xs text-secondary">{classifyMsg}</span>}
+                    </div>
+                  </section>
+                )}
+
+                {/* PRD-08 §3.4 (P1): tool role profile (heatmap + agent coefficient). */}
+                {winMetrics?.entity_metrics && (
+                  <ToolProfileSection em={winMetrics.entity_metrics} kind={winKind} refDate={winRef} />
+                )}
+              </>
+            )}
+
+            {/* ── Tab 3 经验沉淀：推荐建议 + 高频使用 Prompt（分页/忽略/恢复） ── */}
+            {usageSubTab === "sediment" && <SedimentTab />}
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -783,15 +842,27 @@ function KV({ label, value, hint }: { label: string; value: string; hint?: strin
   );
 }
 
-/** SPEC-F2 T7: actionable conclusion below the KPI grid. */
-function KpiConclusion() {
+/** 经验沉淀 Tab：顶部推荐建议 + 高频使用 Prompt 列表；忽略/恢复后两者联动刷新。 */
+function SedimentTab() {
+  const [dataVersion, setDataVersion] = useState(0);
+  return (
+    <>
+      <KpiConclusion version={dataVersion} />
+      <HighValuePrompts onChanged={() => setDataVersion((v) => v + 1)} />
+    </>
+  );
+}
+
+/** SPEC-F2 T7: actionable conclusion below the KPI grid. Now lives at the top
+ * of the 经验沉淀 tab; re-fetches when the prompt list mutates (ignore/restore). */
+function KpiConclusion({ version = 0 }: { version?: number }) {
   const [topPrompt, setTopPrompt] = useState<HighValuePrompt | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    invoke<HighValuePrompt[]>("get_high_value_prompts", { minRepeat: 3 })
-      .then((p) => {
-        if (!cancelled) setTopPrompt(p[0] ?? null);
+    invoke<HighValuePromptPage>("get_high_value_prompts", { minRepeat: 2, offset: 0, limit: 1 })
+      .then((page) => {
+        if (!cancelled) setTopPrompt(page.items[0] ?? null);
       })
       .catch(() => {
         if (!cancelled) setTopPrompt(null);
@@ -799,13 +870,13 @@ function KpiConclusion() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [version]);
 
   if (!topPrompt) return null;
 
   const snippet = topPrompt.prompt_text.slice(0, 30);
   return (
-    <div className="mt-4 rounded-lg border border-warning/20 bg-warning/5 px-4 py-3 text-sm">
+    <div className="mb-6 rounded-lg border border-warning/20 bg-warning/5 px-4 py-3 text-sm">
       <Lightbulb className="mr-1.5 inline h-4 w-4 text-warning" />
       <span className="text-secondary">
         「{snippet}…」类 Prompt 重复了 {topPrompt.repeat_count} 次，
@@ -1186,90 +1257,243 @@ function DailySummarySection({ date }: { date: string }) {
   );
 }
 
-function HighValuePrompts() {
+function HighValuePrompts({ onChanged }: { onChanged?: () => void }) {
   const navigateToSkill = useAppStore((state) => state.navigateToSkill);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
   const [prompts, setPrompts] = useState<HighValuePrompt[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [sediment, setSediment] = useState<HighValuePrompt | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  // 忽略分组列表：展开折叠区时懒加载；忽略/恢复后置 null 强制重取。
+  const [ignored, setIgnored] = useState<IgnoredPromptGroup[] | null>(null);
+  const [ignoredOpen, setIgnoredOpen] = useState(false);
 
-  const load = async () => {
+  const totalPages = Math.max(1, Math.ceil(total / HVP_PAGE_SIZE));
+
+  const load = useCallback(async (target: number) => {
     setLoading(true);
     try {
-      const p = await invoke<HighValuePrompt[]>("get_high_value_prompts", { minRepeat: 3 });
-      setPrompts(p);
-      setExpanded(new Set());
+      const res = await invoke<HighValuePromptPage>("get_high_value_prompts", {
+        minRepeat: 2,
+        offset: (target - 1) * HVP_PAGE_SIZE,
+        limit: HVP_PAGE_SIZE,
+      });
+      setPrompts(res.items);
+      setTotal(res.total);
     } catch {
       setPrompts([]);
+      setTotal(0);
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    load();
   }, []);
 
-  if (prompts.length === 0) return null;
+  useEffect(() => {
+    load(1);
+  }, [load]);
+
+  const loadIgnored = useCallback(async () => {
+    try {
+      setIgnored(await invoke<IgnoredPromptGroup[]>("list_ignored_prompt_groups"));
+    } catch {
+      setIgnored([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (ignoredOpen && ignored === null) loadIgnored();
+  }, [ignoredOpen, ignored, loadIgnored]);
+
+  const handleUnignore = useCallback(
+    async (groupKey: string, source: string) => {
+      try {
+        await invoke("unignore_prompt_group", { groupKey, source });
+        setIgnored(null);
+        await load(page);
+        onChanged?.();
+      } catch (err) {
+        showError(err);
+      }
+    },
+    [load, page, onChanged],
+  );
+
+  const handleIgnore = async (p: HighValuePrompt) => {
+    const groupKey = p.prompt_text;
+    const source = p.source ?? "";
+    try {
+      await invoke("ignore_prompt_group", { groupKey, source, promptSample: groupKey });
+      // 本地推算新总数：最后一页被清空时当前页前移，避免空页。
+      const newTotal = Math.max(0, total - 1);
+      setTotal(newTotal);
+      const target = Math.min(page, Math.max(1, Math.ceil(newTotal / HVP_PAGE_SIZE)));
+      setPage(target);
+      await load(target);
+      setIgnored(null);
+      onChanged?.();
+      showSuccess(
+        "已忽略该组 Prompt",
+        { label: "撤销", onClick: () => handleUnignore(groupKey, source) },
+        5000,
+      );
+    } catch (err) {
+      showError(err);
+    }
+  };
+
+  const gotoPage = (p: number) => {
+    if (p < 1 || p > totalPages || p === page || loading) return;
+    setPage(p);
+    setExpanded(new Set());
+    load(p);
+  };
 
   return (
     <>
-      <section id="high-value-prompts" className="mt-6 rounded-xl border border-[var(--border-subtle)] bg-secondary">
+      <section id="high-value-prompts" className="rounded-xl border border-[var(--border-subtle)] bg-secondary">
         <div className="flex items-center justify-between border-b border-[var(--border-subtle)] px-6 py-4">
-          <span className="text-lg font-semibold">高价值 Prompt（可沉淀为 Skill）</span>
+          <span className="text-lg font-semibold">高频使用 Prompt</span>
           <button
-            onClick={load}
+            onClick={() => load(page)}
             disabled={loading}
             className="rounded-lg bg-tertiary px-3 py-1 text-xs text-white hover:bg-tertiary"
           >
             {loading ? "刷新中…" : "刷新"}
           </button>
         </div>
-        <ul className="divide-y divide-[var(--divider)]">
-          {prompts.map((p, i) => {
-            const isExpanded = expanded.has(i);
-            const { display, truncated } = cleanPromptText(p.prompt_text, isExpanded ? Infinity : 160);
-            return (
-              <li key={i} className="flex items-start justify-between px-6 py-3 text-sm">
-                <div className="min-w-0 flex-1 pr-4">
-                  <div className={`text-primary ${isExpanded ? "" : "truncate"}`}>{display}</div>
-                  {truncated && !isExpanded && (
-                    <button
-                      onClick={() => setExpanded((prev) => new Set([...prev, i]))}
-                      className="mt-1 text-xs text-accent hover:underline"
-                    >
-                      展开
-                    </button>
+
+        {loading && prompts.length === 0 ? (
+          <div className="p-6">
+            <SkeletonList count={5} />
+          </div>
+        ) : prompts.length === 0 ? (
+          <div className="px-6 py-8 text-center text-sm text-tertiary">
+            暂无重复 ≥ 2 次的高频 Prompt。继续使用各 Agent 并采集后，点击「刷新」重试。
+          </div>
+        ) : (
+          <>
+            <ul className="divide-y divide-[var(--divider)]">
+              {prompts.map((p, i) => {
+                const isExpanded = expanded.has(i);
+                const { display, truncated } = cleanPromptText(p.prompt_text, isExpanded ? Infinity : 160);
+                return (
+                  <li key={i} className="flex items-start justify-between px-6 py-3 text-sm">
+                    <div className="min-w-0 flex-1 pr-4">
+                      <div className={`text-primary ${isExpanded ? "" : "truncate"}`}>{display}</div>
+                      {truncated && !isExpanded && (
+                        <button
+                          onClick={() => setExpanded((prev) => new Set([...prev, i]))}
+                          className="mt-1 text-xs text-accent hover:underline"
+                        >
+                          展开
+                        </button>
+                      )}
+                      {isExpanded && (
+                        <button
+                          onClick={() =>
+                            setExpanded((prev) => {
+                              const next = new Set(prev);
+                              next.delete(i);
+                              return next;
+                            })
+                          }
+                          className="mt-1 text-xs text-accent hover:underline"
+                        >
+                          收起
+                        </button>
+                      )}
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-tertiary">
+                        <span className="rounded bg-accent/10 px-1.5 py-0.5 text-accent">{sourceLabel(p.source)}</span>
+                        <span>重复 {p.repeat_count} 次</span>
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <button
+                        onClick={() => setSediment(p)}
+                        className="rounded-lg bg-accent/20 px-3 py-1 text-xs text-accent hover:bg-accent/30"
+                      >
+                        查看并沉淀
+                      </button>
+                      <button
+                        onClick={() => handleIgnore(p)}
+                        disabled={loading}
+                        title="忽略该组，不再出现在本列表与推荐建议中（可在下方恢复）"
+                        className="rounded-lg px-2 py-1 text-xs text-secondary hover:bg-tertiary hover:text-primary disabled:opacity-50"
+                      >
+                        忽略
+                      </button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+
+            {/* 分页（total ≤ 页大小时不显示） */}
+            {total > HVP_PAGE_SIZE && (
+              <div className="flex items-center justify-between border-t border-[var(--border-subtle)] px-6 py-3">
+                <span className="text-xs text-tertiary">
+                  共 {total} 组 · 第 {page}/{totalPages} 页
+                </span>
+                <div className="flex items-center gap-1">
+                  <PagerButton label="‹" disabled={page <= 1} onClick={() => gotoPage(page - 1)} />
+                  {pageNumbers(page, totalPages).map((n, idx) =>
+                    n === "…" ? (
+                      <span key={`gap-${idx}`} className="px-1.5 text-xs text-tertiary">
+                        …
+                      </span>
+                    ) : (
+                      <PagerButton key={n} label={String(n)} active={n === page} onClick={() => gotoPage(n)} />
+                    ),
                   )}
-                  {isExpanded && (
-                    <button
-                      onClick={() =>
-                        setExpanded((prev) => {
-                          const next = new Set(prev);
-                          next.delete(i);
-                          return next;
-                        })
-                      }
-                      className="mt-1 text-xs text-accent hover:underline"
-                    >
-                      收起
-                    </button>
-                  )}
-                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-tertiary">
-                    <span className="rounded bg-accent/10 px-1.5 py-0.5 text-accent">{sourceLabel(p.source)}</span>
-                    <span>重复 {p.repeat_count} 次</span>
-                  </div>
+                  <PagerButton label="›" disabled={page >= totalPages} onClick={() => gotoPage(page + 1)} />
                 </div>
-                <button
-                  onClick={() => setSediment(p)}
-                  className="shrink-0 rounded-lg bg-accent/20 px-3 py-1 text-xs text-accent hover:bg-accent/30"
-                >
-                  查看并沉淀
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* 已忽略分组：常驻折叠区，可逐条恢复 */}
+        <div className="border-t border-[var(--border-subtle)] px-6 py-3">
+          <button
+            onClick={() => setIgnoredOpen((o) => !o)}
+            className="text-xs text-secondary hover:text-primary"
+          >
+            {ignoredOpen ? "▾" : "▸"} 已忽略{ignored !== null ? `（${ignored.length}）` : ""}
+          </button>
+          {ignoredOpen && (
+            <div className="mt-2 space-y-2">
+              {ignored === null ? (
+                <div className="text-xs text-tertiary">加载中…</div>
+              ) : ignored.length === 0 ? (
+                <div className="text-xs text-tertiary">没有已忽略的分组。</div>
+              ) : (
+                ignored.map((g) => {
+                  const { display } = cleanPromptText(g.prompt_sample ?? g.group_key, 120);
+                  return (
+                    <div
+                      key={`${g.group_key}|${g.source ?? ""}`}
+                      className="flex items-center justify-between gap-4 text-sm"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-secondary" title={display}>
+                          {display}
+                        </div>
+                        <div className="mt-0.5 text-xs text-tertiary">{sourceLabel(g.source)}</div>
+                      </div>
+                      <button
+                        onClick={() => handleUnignore(g.group_key, g.source ?? "")}
+                        className="shrink-0 rounded-lg bg-accent/20 px-3 py-1 text-xs text-accent hover:bg-accent/30"
+                      >
+                        恢复
+                      </button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+        </div>
       </section>
 
       {sediment && (
@@ -1280,6 +1504,33 @@ function HighValuePrompts() {
         />
       )}
     </>
+  );
+}
+
+/** 分页器单个按钮（页码/上下页共用）。 */
+function PagerButton({
+  label,
+  onClick,
+  active = false,
+  disabled = false,
+}: {
+  label: string;
+  onClick: () => void;
+  active?: boolean;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`min-w-7 rounded-lg px-2 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+        active
+          ? "bg-accent font-medium text-primary"
+          : "bg-tertiary text-primary hover:bg-tertiary"
+      }`}
+    >
+      {label}
+    </button>
   );
 }
 

@@ -599,6 +599,17 @@ impl Db {
                 provider TEXT
             );
 
+            -- 「高频使用 Prompt」列表的忽略机制：group_key 与 reports.rs 的聚合口径
+            -- 一致（substr(prompt_text,1,120)），source 与 collected_prompts 对齐。
+            -- 忽略为用户自决且永久生效，可在列表底部恢复。
+            CREATE TABLE IF NOT EXISTS ignored_prompt_groups (
+                group_key TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT '',
+                prompt_sample TEXT,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (group_key, source)
+            );
+
             -- PRD-10: scheduled tasks and execution history.
             CREATE TABLE IF NOT EXISTS scheduled_tasks (
                 id TEXT PRIMARY KEY,

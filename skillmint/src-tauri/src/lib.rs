@@ -574,6 +574,9 @@ pub fn run() {
             commands::get_project_detail,
             // PRD-02: prompt-driven generation + reports
             commands::get_high_value_prompts,
+            commands::ignore_prompt_group,
+            commands::unignore_prompt_group,
+            commands::list_ignored_prompt_groups,
             commands::generate_skill_from_prompt,
             commands::preview_skill_from_prompt,
             commands::repair_skill_paths,

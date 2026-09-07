@@ -365,6 +365,20 @@ export interface HighValuePrompt {
   source?: string;
 }
 
+/** 「高频使用 Prompt」分页结果（分组键 = prompt 前 120 字符 + source）。 */
+export interface HighValuePromptPage {
+  items: HighValuePrompt[];
+  total: number;
+}
+
+/** 用户忽略的高频 Prompt 分组（永久生效，可在列表底部恢复）。 */
+export interface IgnoredPromptGroup {
+  group_key: string;
+  source?: string;
+  prompt_sample?: string;
+  created_at: number;
+}
+
 export interface SkillSuggestionReport {
   generated_at: number;
   top_prompts: HighValuePrompt[];

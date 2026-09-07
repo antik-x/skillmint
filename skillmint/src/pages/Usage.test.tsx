@@ -2,8 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useCollectionStore } from "../stores/collectionStore";
+import { useAppStore } from "../stores/appStore";
 import { invoke } from "@tauri-apps/api/core";
-import Usage, { cleanPromptText, sourceLabel } from "./Usage";
+import Usage, { cleanPromptText, pageNumbers, sourceLabel } from "./Usage";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -62,6 +63,8 @@ function resetStore() {
   useCollectionStore.setState({
     sources: [{ source: "claude-code", collector_kind: "claude", data_path: "/x", status: "ok", record_count: 10 }],
   });
+  // Tab 化后沉淀区在「经验沉淀」子页下；每个用例从概览 tab 开始，保证状态隔离。
+  useAppStore.setState({ usageSubTab: "overview" });
 }
 
 describe("Usage page", () => {
@@ -75,7 +78,7 @@ describe("Usage page", () => {
         ]);
       }
       if (cmd === "get_window_metrics") return Promise.resolve(mockWindowMetrics());
-      if (cmd === "get_high_value_prompts") return Promise.resolve([]);
+      if (cmd === "get_high_value_prompts") return Promise.resolve({ items: [], total: 0 });
       return Promise.resolve(undefined);
     });
   });
@@ -88,7 +91,7 @@ describe("Usage page", () => {
         ]);
       }
       if (cmd === "get_window_metrics") return Promise.resolve(mockWindowMetrics());
-      if (cmd === "get_high_value_prompts") return Promise.resolve([]);
+      if (cmd === "get_high_value_prompts") return Promise.resolve({ items: [], total: 0 });
       if (cmd === "get_agent_usage") {
         const a = args as Record<string, unknown> | undefined;
         return Promise.resolve({ source: a?.source, days: a?.days });
@@ -120,16 +123,19 @@ describe("Usage page", () => {
       }
       if (cmd === "get_window_metrics") return Promise.resolve(mockWindowMetrics());
       if (cmd === "get_high_value_prompts") {
-        return Promise.resolve([
-          {
-            prompt_text: "Continue from where you left off and finish the task",
-            source: "claude-code",
-            repeat_count: 5,
-            first_seen: 1,
-            last_seen: 2,
-            sample_session_id: "s1",
-          },
-        ]);
+        return Promise.resolve({
+          items: [
+            {
+              prompt_text: "Continue from where you left off and finish the task",
+              source: "claude-code",
+              repeat_count: 5,
+              first_seen: 1,
+              last_seen: 2,
+              sample_session_id: "s1",
+            },
+          ],
+          total: 1,
+        });
       }
       if (cmd === "preview_skill_from_prompt") {
         return Promise.resolve({
@@ -142,6 +148,7 @@ describe("Usage page", () => {
     });
 
     render(<Usage />);
+    await userEvent.click(screen.getByRole("button", { name: "经验沉淀" }));
     await waitFor(() => expect(screen.getByText("查看并沉淀")).toBeInTheDocument());
     await userEvent.click(screen.getByText("查看并沉淀"));
 
@@ -160,16 +167,19 @@ describe("Usage page", () => {
       }
       if (cmd === "get_window_metrics") return Promise.resolve(mockWindowMetrics());
       if (cmd === "get_high_value_prompts") {
-        return Promise.resolve([
-          {
-            prompt_text: "[Image: only.png]",
-            source: "claude-code",
-            repeat_count: 5,
-            first_seen: 1,
-            last_seen: 2,
-            sample_session_id: "s1",
-          },
-        ]);
+        return Promise.resolve({
+          items: [
+            {
+              prompt_text: "[Image: only.png]",
+              source: "claude-code",
+              repeat_count: 5,
+              first_seen: 1,
+              last_seen: 2,
+              sample_session_id: "s1",
+            },
+          ],
+          total: 1,
+        });
       }
       if (cmd === "preview_skill_from_prompt") {
         return Promise.reject(new Error("此 Prompt 内容无法沉淀为 Skill（占位符占比过高）"));
@@ -179,6 +189,7 @@ describe("Usage page", () => {
     });
 
     render(<Usage />);
+    await userEvent.click(screen.getByRole("button", { name: "经验沉淀" }));
     await waitFor(() => expect(screen.getByText("查看并沉淀")).toBeInTheDocument());
     await userEvent.click(screen.getByText("查看并沉淀"));
 
@@ -300,6 +311,23 @@ describe("Usage page helpers", () => {
     it("falls back to 未知来源 when source is missing", () => {
       expect(sourceLabel(undefined)).toBe("未知来源");
       expect(sourceLabel("")).toBe("未知来源");
+    });
+  });
+
+  describe("pageNumbers", () => {
+    it("lists every page when total fits in one row", () => {
+      expect(pageNumbers(1, 7)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    });
+
+    it("keeps 1, current window and last page with ellipsis gaps", () => {
+      expect(pageNumbers(1, 20)).toEqual([1, 2, "…", 20]);
+      expect(pageNumbers(10, 20)).toEqual([1, "…", 9, 10, 11, "…", 20]);
+      expect(pageNumbers(20, 20)).toEqual([1, "…", 19, 20]);
+    });
+
+    it("does not repeat pages when window touches the edges", () => {
+      expect(pageNumbers(2, 20)).toEqual([1, 2, 3, "…", 20]);
+      expect(pageNumbers(19, 20)).toEqual([1, "…", 18, 19, 20]);
     });
   });
 });
