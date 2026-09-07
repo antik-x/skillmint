@@ -1,0 +1,28 @@
+skillmint/src-tauri/src/db/analytics.rs
+  h_04c00a69eeb820 90-95
+skillmint/src-tauri/src/db/mod.rs
+  h_04c00a69eeb820 783-786,906-1037,1040-1041,1051,1086
+skillmint/src-tauri/src/db/reports.rs
+  h_04c00a69eeb820 44-49,58-60
+skillmint/src-tauri/src/discovery/llm_enhance.rs
+  h_04c00a69eeb820 15-16,71
+skillmint/src-tauri/src/discovery/repeat_pattern.rs
+  h_04c00a69eeb820 26-27,29-41,45,50,56,63-64,66,71-87,90,92,95,107-112,118-121,124,126,140,148-149
+skillmint/src-tauri/src/prompt_kind.rs
+  h_04c00a69eeb820 16-17,21-23,28-55,64-67,69,151-204
+skillmint/src-tauri/src/tests.rs
+  h_04c00a69eeb820 5612-5700
+skillmint/src/pages/Inbox.tsx
+  h_04c00a69eeb820 44-59,575-581
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.6.24",
+  "base_commit_sha": "7735c2f8e1beee2502b638f4326d68f0a26d8321",
+  "prompts": {},
+  "humans": {
+    "h_04c00a69eeb820": {
+      "author": "antik-x <jianyong.me@gmail.com>"
+    }
+  }
+}
