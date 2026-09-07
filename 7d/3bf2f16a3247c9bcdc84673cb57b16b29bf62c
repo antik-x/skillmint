@@ -1,0 +1,19 @@
+skillmint/src-tauri/src/tests.rs
+  s_e8e529073ec2dd::t_3b5e17ec5364a0 2742-2744,2746,2749,2752-2753,2755-2756,2759-2773,2848,2853-2972,4939,5891-5966
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.6.24",
+  "base_commit_sha": "7d3bf2f16a3247c9bcdc84673cb57b16b29bf62c",
+  "prompts": {},
+  "sessions": {
+    "s_e8e529073ec2dd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a07aa5-f699-7780-9e0a-bd7a78861d80",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "antik-x <jianyong.me@gmail.com>"
+    }
+  }
+}
