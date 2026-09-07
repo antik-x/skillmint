@@ -1,0 +1,14 @@
+skillmint/src/components/DataCollectionPanel.tsx
+  h_04c00a69eeb820 116-118
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.6.24",
+  "base_commit_sha": "995038cabdf36862670ec5a37515b5b1b0ebe569",
+  "prompts": {},
+  "humans": {
+    "h_04c00a69eeb820": {
+      "author": "antik-x <jianyong.me@gmail.com>"
+    }
+  }
+}
