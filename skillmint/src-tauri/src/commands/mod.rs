@@ -947,7 +947,7 @@ pub fn get_skill_health(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_settings(
     new_settings: AppSettings,
     state: State<'_, AppState>,
@@ -959,45 +959,56 @@ pub fn save_settings(
         .map_err(|e: tauri::Error| e.to_string())?;
     std::fs::create_dir_all(&app_dir).map_err(|e| e.to_string())?;
 
-    let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
+    // Q5 丝滑度：在 settings 锁内只做内存赋值，keyring/文件 I/O 全部移到锁外——
+    // keyring 可能触发 SecurityAgent 密码弹窗，持锁等待会把所有读 settings 的
+    // 命令（探测/采集/扫描）堵成"一直加载中"。
+    let mut updated = {
+        let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
 
-    // P3-6: center repo / sync-mode / scope-mode settings retired — the skills
-    // library is driven by the npx locks + private hubs now. The remaining
-    // internal `settings.center_repo` only serves dormant legacy commands.
-    settings.auto_sync_interval_minutes = new_settings.auto_sync_interval_minutes;
-    settings.launch_at_login = new_settings.launch_at_login;
-    settings.show_dock_icon = new_settings.show_dock_icon;
-    settings.onboarding_completed = new_settings.onboarding_completed;
-    settings.remote_enabled = new_settings.remote_enabled;
-    settings.theme = new_settings.theme;
-    // SECURITY: persist each model's API key to the keyring, never to settings.json.
-    // Keep the user-supplied keys in memory so the UI echoes them back immediately.
-    for model in &new_settings.ai.models {
+        // P3-6: center repo / sync-mode / scope-mode settings retired — the skills
+        // library is driven by the npx locks + private hubs now. The remaining
+        // internal `settings.center_repo` only serves dormant legacy commands.
+        settings.auto_sync_interval_minutes = new_settings.auto_sync_interval_minutes;
+        settings.launch_at_login = new_settings.launch_at_login;
+        settings.show_dock_icon = new_settings.show_dock_icon;
+        settings.onboarding_completed = new_settings.onboarding_completed;
+        settings.remote_enabled = new_settings.remote_enabled;
+        settings.theme = new_settings.theme;
+        settings.ai = new_settings.ai;
+        // P3: npx skills integration settings.
+        settings.npx_package = if new_settings.npx_package.trim().is_empty() {
+            "skills@latest".to_string()
+        } else {
+            new_settings.npx_package.trim().to_string()
+        };
+        settings.skills_api_url = new_settings.skills_api_url;
+        settings.proxy_env = new_settings.proxy_env;
+        settings.disable_telemetry = new_settings.disable_telemetry;
+        settings.node_path_override = new_settings.node_path_override;
+        // P4 OpenViking: keep the user-supplied key in memory (UI echoes it back).
+        settings.openviking = new_settings.openviking;
+        // device_id is server-owned and read-only here: ignore whatever the frontend sent.
+        settings.clone()
+    };
+
+    // SECURITY: keyring writes happen OUTSIDE the settings lock (SecurityAgent
+    // prompts can block indefinitely; the lock must never be held across them).
+    // Keys stay in `updated`'s memory so the returned snapshot echoes them back.
+    for model in &updated.ai.models {
         crate::settings::AiConfig::write_key(&model.id, &model.api_key);
     }
-    settings.ai = new_settings.ai;
-    // P3: npx skills integration settings.
-    settings.npx_package = if new_settings.npx_package.trim().is_empty() {
-        "skills@latest".to_string()
-    } else {
-        new_settings.npx_package.trim().to_string()
-    };
-    settings.skills_api_url = new_settings.skills_api_url;
-    settings.proxy_env = new_settings.proxy_env;
-    settings.disable_telemetry = new_settings.disable_telemetry;
-    settings.node_path_override = new_settings.node_path_override;
-    // P4 OpenViking: keep the user-supplied key in memory (UI echoes it back);
-    // settings.save() below persists it to the keyring, never to settings.json.
-    settings.openviking = new_settings.openviking;
-    // device_id is server-owned and read-only here: ignore whatever the frontend sent.
+    updated.save(&app_dir).map_err(|e| e.to_string())?;
 
-    settings.save(&app_dir).map_err(|e| e.to_string())?;
+    {
+        let mut settings = state.settings.lock().map_err(|e| e.to_string())?;
+        *settings = updated.clone();
+    }
 
     // Auto-sync interval may have changed: restart the background scheduler so
     // the new cadence (or 0 = disabled) takes effect immediately (PRD-0 §4.7).
     crate::restart_sync_scheduler(&app);
 
-    Ok(state_to_model(&settings))
+    Ok(state_to_model(&updated))
 }
 
 fn file_mtime_secs(path: &std::path::Path) -> Option<u64> {
