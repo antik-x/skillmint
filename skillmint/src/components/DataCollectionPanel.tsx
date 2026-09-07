@@ -113,7 +113,9 @@ export default function DataCollectionPanel({ title = "使用数据采集" }: Da
                     </td>
                     <td className="px-4 py-3">
                       <div className="font-medium text-primary">{s.source}</div>
-                      <div className="mt-0.5 text-xs text-tertiary">{s.data_path}</div>
+                      {/* overflow-wrap:anywhere（而非 break-words）：长路径的软换行机会
+                          必须计入表格列的 min-content，表格才能在窄窗口下收缩、不出横向滚动。 */}
+                      <div className="mt-0.5 text-xs text-tertiary [overflow-wrap:anywhere]">{s.data_path}</div>
                     </td>
                     <td className="whitespace-nowrap px-4 py-3">
                       <Badge variant={meta.variant} size="sm">
