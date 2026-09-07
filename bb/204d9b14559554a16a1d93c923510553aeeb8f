@@ -1,0 +1,36 @@
+skillmint/src-tauri/src/commands/mod.rs
+  h_04c00a69eeb820 893-1025
+skillmint/src-tauri/src/commands/npxskills.rs
+  h_04c00a69eeb820 448-538
+skillmint/src-tauri/src/db/analytics.rs
+  h_04c00a69eeb820 224-265
+skillmint/src-tauri/src/db/scheduler.rs
+  h_04c00a69eeb820 24,63-67,69,74-90
+skillmint/src-tauri/src/lib.rs
+  h_04c00a69eeb820 62-65,295,381-382,393-397,413-420,690-693
+skillmint/src-tauri/src/scheduler/engine.rs
+  h_04c00a69eeb820 4,131-144,404-415
+skillmint/src-tauri/src/scheduler/registry.rs
+  h_04c00a69eeb820 165-176
+skillmint/src-tauri/src/tests.rs
+  h_04c00a69eeb820 5967-6069
+skillmint/src/lib/npxskills.ts
+  h_04c00a69eeb820 161-170
+skillmint/src/pages/Today.test.tsx
+  h_04c00a69eeb820 2,8,14,16-22,24-34,92,97-99,101,112,165,219,226-310
+skillmint/src/pages/Today.tsx
+  h_04c00a69eeb820 3-8,18,26,34,60-62,95,116-120,124-125,132-134,160,174-211,231-245,262-277,308-309,311,315-316,319,322,342,345,347-348,353,400-418,512,517-575,643-658,698-703,707,714-718,722,729,744-757,775,777,782-796,801-802,823,844-845,880,1152,1158,1173-1181,1183-1216,1238-1290
+skillmint/src/types/index.ts
+  h_04c00a69eeb820 763-769
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "development:1.6.24",
+  "base_commit_sha": "bb204d9b14559554a16a1d93c923510553aeeb8f",
+  "prompts": {},
+  "humans": {
+    "h_04c00a69eeb820": {
+      "author": "antik-x <jianyong.me@gmail.com>"
+    }
+  }
+}
