@@ -34,6 +34,8 @@ const NON_USER_PREFIXES: &[&str] = &[
     // 工具调用回显 / Codex 会话历史注入（真机榜单实例）。
     "Called the Read tool",
     "The following is the Codex agent history",
+    // Stop hook 通知（真机榜单 159 次实例）。
+    "A session-scoped Stop hook is now active",
     "[SYSTEM NOTIFICATION",
     "(Bash completed with no output)",
     "DO NOT respond",
@@ -82,10 +84,35 @@ pub fn is_non_user_prompt(prompt_text: &str) -> bool {
     if t.starts_with(IMAGE_PLACEHOLDER_PREFIX) {
         return true;
     }
+    // P6/v4 机制级泛化：以 XML/HTML 标签形态开头（<system-reminder>、<bash-stdout>、
+    // <in-app-browser-context>… 整个家族都是 harness 注入）。用户真实输入极少以
+    // 标签开头（粘贴 HTML 片段的场景会被误标——可接受的保守取舍，见 Q2 决议）。
+    if starts_with_xml_tag(t) {
+        return true;
+    }
     if NON_USER_PREFIXES.iter().any(|p| t.starts_with(p)) {
         return true;
     }
     NON_USER_CONTAINS.iter().any(|p| t.contains(p))
+}
+
+/// 是否以 XML/HTML 标签形态开头："<" + 首字母 + 合法标签字符（字母/数字/-/_/:）+
+/// 空白或 ">"。如 "<system-reminder>"、"<bash-input>pwd"。
+fn starts_with_xml_tag(t: &str) -> bool {
+    let mut chars = t.chars();
+    if chars.next() != Some('<') {
+        return false;
+    }
+    let mut seen_alpha = false;
+    for c in chars {
+        match c {
+            c if c.is_ascii_alphabetic() => seen_alpha = true,
+            c if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ':' => {}
+            '>' | ' ' | '\t' | '\n' | '\r' => return seen_alpha,
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// 该 prompt 是否为用户真实输入。
@@ -169,6 +196,14 @@ mod tests {
         assert!(is_non_user_prompt(
             "The following is the Codex agent history added since your last turn"
         ));
+        assert!(is_non_user_prompt(
+            "A session-scoped Stop hook is now active with conditions"
+        ));
+        // v4 机制级泛化：任意标签形态开头。
+        assert!(is_non_user_prompt(
+            "<in-app-browser-context source=\"ambient-ui-state\">…"
+        ));
+        assert!(!is_non_user_prompt("写一个 <div> 居中的组件"));  // 文字开头不受影响
         assert!(is_non_user_prompt(
             "[SYSTEM NOTIFICATION - NOT USER INPUT] This is an automated background-task event"
         ));

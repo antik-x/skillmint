@@ -1048,7 +1048,7 @@ impl Db {
         let done: bool = self
             .conn
             .query_row(
-                "SELECT COUNT(*) FROM schema_meta WHERE key = 'prompt_kind_retag_v3'",
+                "SELECT COUNT(*) FROM schema_meta WHERE key = 'prompt_kind_retag_v4'",
                 [],
                 |row| row.get::<_, i64>(0),
             )
@@ -1083,7 +1083,7 @@ impl Db {
         }
         self.conn.execute("COMMIT", [])?;
         self.conn.execute(
-            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('prompt_kind_retag_v3', '1')",
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('prompt_kind_retag_v4', '1')",
             [],
         )?;
         eprintln!("[migrate] prompt_kind retag: {changed} row(s) updated of {}", rows.len());
