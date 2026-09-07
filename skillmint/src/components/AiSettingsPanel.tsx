@@ -5,6 +5,7 @@ import {
   Brain,
   Check,
   ChevronDown,
+  ChevronUp,
   Database,
   FlaskConical,
   Key,
@@ -21,7 +22,7 @@ import { Button } from "./ui/Button";
 import { Card } from "./ui/Card";
 import { HelpTip } from "./ui/HelpTip";
 import { Input } from "./ui/Input";
-import type { AiConfig, AiModelConfig, AcpConnectionConfig, AcpTransport, DetectedAgent, LlmRequestLog, OpenVikingConfig } from "../types";
+import type { AiConfig, AiModelConfig, AcpConnectionConfig, AcpHealthEntry, AcpTransport, DetectedAgent, LlmRequestLog, OpenVikingConfig } from "../types";
 
 /** P0 探针返回结构（与 Rust `openviking::ProbeResult` 对应）。 */
 interface OvProbeResult {
@@ -87,6 +88,8 @@ export default function AiSettingsPanel() {
   const [testingAcpId, setTestingAcpId] = useState<string | null>(null);
   const [detectedAgents, setDetectedAgents] = useState<DetectedAgent[]>([]);
   const [detectingAgents, setDetectingAgents] = useState(false);
+  // P5/Q7：连接健康状态灯（最近调用结果 + 冷却）。
+  const [acpHealth, setAcpHealth] = useState<Record<string, AcpHealthEntry>>({});
 
   // P4: OpenViking integration (root-level settings, separate save path).
   const [ov, setOv] = useState<OpenVikingConfig>(() =>
@@ -107,6 +110,7 @@ export default function AiSettingsPanel() {
 
   useEffect(() => {
     detectAgents();
+    loadAcpHealth();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -200,6 +204,27 @@ export default function AiSettingsPanel() {
     setAi({ acp_connections: form.acp_connections.filter((c) => c.id !== id) });
   };
 
+  // P5/Q7：连接顺序即调用优先级（上/下移动）。
+  const moveAcp = (id: string, dir: -1 | 1) => {
+    setForm((prev) => {
+      const arr = [...prev.acp_connections];
+      const i = arr.findIndex((c) => c.id === id);
+      const j = i + dir;
+      if (i < 0 || j < 0 || j >= arr.length) return prev;
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+      return { ...prev, acp_connections: arr };
+    });
+  };
+
+  const loadAcpHealth = async () => {
+    try {
+      const list = await invoke<AcpHealthEntry[]>("get_acp_health");
+      setAcpHealth(Object.fromEntries(list.map((h) => [h.id, h])));
+    } catch {
+      // 浏览器调试（mock）下该命令不存在——静默。
+    }
+  };
+
   const handleSave = async () => {
     if (saving) return;
     setSaving(true);
@@ -239,13 +264,19 @@ export default function AiSettingsPanel() {
     if (testingAcpId) return;
     setTestingAcpId(id);
     try {
-      const msg = await invoke<string>("test_acp_transport", { id });
-      showSuccess(`ACP 连接成功：${msg.slice(0, 200)}`);
+      const msg = await invokeWithTimeout<string>(
+        "test_acp_transport",
+        { id },
+        120000,
+        "握手超过 120 秒仍未返回：npx 首次下载适配器可能较慢，可稍后重试。"
+      );
+      showSuccess(`ACP 握手成功：${msg.slice(0, 200)}`);
     } catch (err) {
       const message = typeof err === "string" ? err : err instanceof Error ? err.message : String(err);
-      showError(`ACP 连接失败：${message}`);
+      showError(`ACP 握手失败：${message}`);
     } finally {
       setTestingAcpId(null);
+      loadAcpHealth();
     }
   };
 
@@ -371,7 +402,8 @@ export default function AiSettingsPanel() {
             </Button>
           </div>
           <p className="mt-1 text-xs text-secondary">
-            启用后，语义分类、每日摘要等任务会优先调用本地智能体（如 Claude Code / Kimi Code CLI），无 API Key 时也能运行。
+            启用「优先使用 ACP」后，语义分类、每日摘要等任务会优先调用本地智能体（Kimi Code 原生 ACP；Claude Code / Codex 经官方适配器），无 API Key 时也能运行。
+            连接自上而下依次尝试，失败自动降级到下一个；额度/登录类失败会进入短暂冷却，避免每次调用都先撞已知的墙。
           </p>
         </div>
 
@@ -402,14 +434,19 @@ export default function AiSettingsPanel() {
           </div>
         ) : (
           <div className="divide-y divide-[var(--border-subtle)]">
-            {form.acp_connections.map((conn) => (
+            {form.acp_connections.map((conn, idx) => (
               <AcpRow
                 key={conn.id}
                 connection={conn}
+                health={acpHealth[conn.id]}
                 onChange={(patch) => updateAcp(conn.id, patch)}
                 onTransportChange={(patch) => updateAcpTransport(conn.id, patch)}
                 onTest={() => testAcp(conn.id)}
                 onRemove={() => removeAcp(conn.id)}
+                onMoveUp={() => moveAcp(conn.id, -1)}
+                onMoveDown={() => moveAcp(conn.id, 1)}
+                isFirst={idx === 0}
+                isLast={idx === form.acp_connections.length - 1}
                 testing={testingAcpId === conn.id}
               />
             ))}
@@ -650,7 +687,8 @@ function AcpAutoDetect({
             <h4 className="text-sm font-medium text-primary">本地智能体自动检测</h4>
           </div>
           <p className="mt-1 text-xs text-secondary">
-            扫描 PATH 中已安装的 Claude Code、Kimi Code、Codex 等 ACP 兼容 CLI。
+            扫描 PATH 中已安装的 ACP 兼容 CLI：Kimi Code（原生 `kimi acp`）、Claude Code / Codex（经 Zed
+            官方适配器，首跑需 npx 下载）。ZCode 无 ACP 支持，不在检测范围。
           </p>
         </div>
         <Button variant="secondary" size="sm" onClick={onDetect} loading={detecting}>
@@ -679,6 +717,9 @@ function AcpAutoDetect({
                   <div className="font-mono text-xs text-tertiary">
                     {agent.command} {agent.args.join(" ")}
                   </div>
+                  {agent.login_hint && (
+                    <div className="text-xs text-tertiary">{agent.login_hint}</div>
+                  )}
                 </div>
                 {added ? (
                   <span className="text-xs text-secondary">已添加</span>
@@ -882,21 +923,44 @@ function ModelRow({
 
 function AcpRow({
   connection,
+  health,
   onChange,
   onTransportChange,
   onTest,
   onRemove,
+  onMoveUp,
+  onMoveDown,
+  isFirst,
+  isLast,
   testing,
 }: {
   connection: AcpConnectionConfig;
+  health?: AcpHealthEntry;
   onChange: (patch: Partial<AcpConnectionConfig>) => void;
   onTransportChange: (patch: Partial<AcpTransport>) => void;
   onTest: () => void;
   onRemove: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  isFirst: boolean;
+  isLast: boolean;
   testing: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const transport = connection.transport;
+
+  // P5/Q7：健康状态灯——绿=最近调用成功；黄=冷却中（额度/登录等失败）；红=最近失败；
+  // 灰=从未调用。
+  const healthDot =
+    health?.state === "ok"
+      ? "bg-success"
+      : health?.state === "cooldown"
+        ? "bg-warning"
+        : health?.state === "error"
+          ? "bg-danger"
+          : "bg-tertiary";
+  const healthTitle =
+    health?.detail || (health?.state === "ok" ? "最近调用成功" : "尚未调用");
 
   return (
     <div className="px-6 py-4">
@@ -916,11 +980,27 @@ function AcpRow({
                 已禁用
               </span>
             )}
+            {isFirst && connection.enabled && (
+              <span className="shrink-0 rounded-full bg-accent/10 px-2 py-0.5 text-xs font-medium text-accent">
+                优先
+              </span>
+            )}
           </div>
-          <div className="mt-2 text-xs text-tertiary">
-            {transport.kind === "stdio"
-              ? `stdio: ${transport.command} ${transport.args.join(" ")}`
-              : `sse: ${transport.url}`}
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-tertiary">
+            <span className="inline-flex items-center gap-1.5" title={healthTitle}>
+              <span className={`inline-block h-2 w-2 rounded-full ${healthDot}`} />
+              {health?.state === "cooldown" && health.cooldown_remaining > 0
+                ? `冷却中（约 ${Math.ceil(health.cooldown_remaining / 60)} 分钟）`
+                : healthTitle}
+            </span>
+            {transport.kind === "stdio" && (
+              <span className="font-mono">
+                {transport.command} {transport.args.join(" ")}
+              </span>
+            )}
+            {transport.kind === "sse" && (
+              <span className="text-danger">SSE 传输已弃用，请改用 stdio</span>
+            )}
           </div>
         </div>
 
@@ -935,6 +1015,22 @@ function AcpRow({
             <div className="peer h-5 w-9 rounded-full bg-tertiary after:absolute after:left-[2px] after:top-[2px] after:h-4 after:w-4 after:rounded-full after:bg-primary after:transition-all peer-checked:bg-accent peer-checked:after:translate-x-full" />
           </label>
           <button
+            onClick={onMoveUp}
+            disabled={isFirst}
+            className="rounded p-1.5 text-tertiary hover:bg-tertiary hover:text-primary disabled:opacity-30"
+            title="上移（提高优先级）"
+          >
+            <ChevronUp className="h-4 w-4" />
+          </button>
+          <button
+            onClick={onMoveDown}
+            disabled={isLast}
+            className="rounded p-1.5 text-tertiary hover:bg-tertiary hover:text-primary disabled:opacity-30"
+            title="下移（降低优先级）"
+          >
+            <ChevronDown className="h-4 w-4 rotate-180" />
+          </button>
+          <button
             onClick={() => setExpanded((v) => !v)}
             className="rounded p-1.5 text-tertiary hover:bg-tertiary hover:text-primary"
           >
@@ -944,7 +1040,7 @@ function AcpRow({
             onClick={onTest}
             disabled={testing}
             className="rounded p-1.5 text-tertiary hover:bg-tertiary hover:text-primary disabled:opacity-50"
-            title="测试连接"
+            title="测试连接（真实 ACP 握手，不消耗额度）"
           >
             <FlaskConical className={`h-4 w-4 ${testing ? "animate-pulse" : ""}`} />
           </button>
@@ -970,7 +1066,7 @@ function AcpRow({
                   onChange={(e) =>
                     onTransportChange({ kind: "stdio", command: e.target.value })
                   }
-                  placeholder="例如：claude"
+                  placeholder="例如：kimi / npx"
                   className="w-full rounded-md border border-[var(--border-prominent)] bg-primary px-2 py-1.5 text-sm text-primary focus:border-accent focus:outline-none"
                 />
               </div>
@@ -985,22 +1081,19 @@ function AcpRow({
                       args: e.target.value.split(/\s+/).filter(Boolean),
                     })
                   }
-                  placeholder="code --mcp"
+                  placeholder="acp 或 -y @zed-industries/claude-code-acp@0.16"
                   className="w-full rounded-md border border-[var(--border-prominent)] bg-primary px-2 py-1.5 text-sm text-primary focus:border-accent focus:outline-none"
                 />
               </div>
+              <p className="md:col-span-2 text-xs text-tertiary">
+                分析会话运行在固定工作目录 ~/.skillmint/acp-workspace（哨兵隔离，不影响你的登录与额度）；
+                复用该 CLI 自身的登录态，请确保已登录。
+              </p>
             </div>
           ) : (
-            <div>
-              <label className="mb-1 block text-xs text-secondary">SSE URL</label>
-              <input
-                type="text"
-                value={transport.url}
-                onChange={(e) => onTransportChange({ kind: "sse", url: e.target.value })}
-                placeholder="http://localhost:3000/sse"
-                className="w-full rounded-md border border-[var(--border-prominent)] bg-primary px-2 py-1.5 text-sm text-primary focus:border-accent focus:outline-none"
-              />
-            </div>
+            <p className="text-xs text-danger">
+              SSE 传输从未实现且已弃用（P5）。请把连接改为 stdio（如 kimi acp），或删除后用「自动检测」重新添加。
+            </p>
           )}
         </div>
       )}

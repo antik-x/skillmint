@@ -236,6 +236,18 @@ export interface DetectedAgent {
   command: string;
   display_name: string;
   args: string[];
+  /** 登录/前置条件提示（Q7）。 */
+  login_hint?: string;
+}
+
+/** P5/Q7: 每条 ACP 连接的健康状态（最近调用结果）。 */
+export interface AcpHealthEntry {
+  id: string;
+  /** "ok" | "cooldown" | "error" | "idle"（从未调用） */
+  state: string;
+  detail: string;
+  /** 冷却剩余秒数（0 = 不在冷却）。 */
+  cooldown_remaining: number;
 }
 
 // PRD-01: project + bindings

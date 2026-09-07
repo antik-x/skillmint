@@ -54,8 +54,25 @@ fn default_chat_model(cfg: &AiConfig) -> Option<&crate::settings::AiModelConfig>
 }
 
 /// Whether a chat-capable model with a non-empty API key is configured.
-pub fn is_configured(cfg: &AiConfig) -> bool {
+/// （仅云端口径——cloud_chat 的内部闸门用这个，避免 ACP 启用时拿空 Key 打云端。）
+pub fn has_cloud_key(cfg: &AiConfig) -> bool {
     default_chat_model(cfg).map_or(false, |m| !m.api_key.trim().is_empty())
+}
+
+/// P5: 任一启用的 ACP 连接（命令非空）即视为本地分析引擎可用。
+pub fn has_enabled_acp(cfg: &AiConfig) -> bool {
+    cfg.acp_connections.iter().any(|c| {
+        c.enabled
+            && match &c.transport {
+                crate::acp::AcpTransport::Stdio { command, .. } => !command.trim().is_empty(),
+                crate::acp::AcpTransport::Sse { .. } => false,
+            }
+    })
+}
+
+/// 「AI 已配置」= 云端 Key 或 ACP 连接任一可用（Q3 决议：无 Key 纯本地模式）。
+pub fn is_configured(cfg: &AiConfig) -> bool {
+    has_cloud_key(cfg) || has_enabled_acp(cfg)
 }
 
 /// Outcome of a single LLM/ACP chat attempt, including routing metadata
@@ -105,36 +122,69 @@ pub fn chat(cfg: &AiConfig, system: &str, user: &str) -> Option<String> {
     chat_with_outcome(cfg, system, user).content
 }
 
+/// 仅走云端（连接测试等语义上专测云模型的场景，避免被 prefer_acp 串路由）。
+pub fn chat_cloud(cfg: &AiConfig, system: &str, user: &str) -> Option<String> {
+    cloud_chat(cfg, system, user)
+}
+
 /// Same as `chat` but returns routing metadata for audit logging.
+///
+/// P5 路由语义：prefer_acp 时按连接顺序尝试（冷却中的跳过），首个成功者胜出；
+/// 全部失败时 strict_local_mode 报错不回退，否则回退云端——并把 ACP 失败摘要
+/// 写进 outcome.error，审计日志能看到「为什么没走本地」。
 pub fn chat_with_outcome(cfg: &AiConfig, system: &str, user: &str) -> ChatOutcome {
-    // 1. Prefer local ACP agents when enabled.
+    let mut acp_attempts: Option<String> = None;
     if cfg.prefer_acp {
-        match crate::acp::first_available_chat(&cfg.acp_connections, system, user) {
-            Some(reply) => return ChatOutcome::ok("acp", reply),
-            None if cfg.strict_local_mode => {
-                return ChatOutcome::err(
-                    "acp",
-                    "本地 Agent 调用失败且已开启严格本地模式，禁止回退到云端 LLM",
-                );
+        match crate::acp::route_chat(&cfg.acp_connections, system, user) {
+            crate::acp::AcpRouteResult::Succeeded { connection, reply, attempts } => {
+                if !attempts.is_empty() {
+                    // 有连接失败后降级成功的，也留痕。
+                    acp_attempts = Some(attempts.join("；"));
+                }
+                return ChatOutcome {
+                    content: Some(reply),
+                    provider: format!("acp:{connection}"),
+                    fallback: !attempts.is_empty(),
+                    error: acp_attempts,
+                };
             }
-            None => {}
+            crate::acp::AcpRouteResult::Failed { attempts } => {
+                let summary = if attempts.is_empty() {
+                    "没有已启用的 ACP 连接".to_string()
+                } else {
+                    attempts.join("；")
+                };
+                if cfg.strict_local_mode {
+                    return ChatOutcome::err(
+                        "acp",
+                        format!("本地 Agent 调用失败且已开启严格本地模式，禁止回退到云端 LLM（{summary}）"),
+                    );
+                }
+                acp_attempts = Some(format!("本地 Agent 全部失败（{summary}），已回退云端"));
+            }
         }
     }
-    // 2. Fall back to cloud HTTP provider.
+    // Fall back to cloud HTTP provider.
     match cloud_chat(cfg, system, user) {
         Some(reply) => {
             let provider = default_chat_model(cfg)
                 .map(|m| format!("cloud:{}", m.id))
                 .unwrap_or_else(|| "cloud:unknown".to_string());
-            ChatOutcome::fallback(provider, reply)
+            ChatOutcome { content: Some(reply), provider, fallback: true, error: acp_attempts }
         }
-        None => ChatOutcome::err("cloud", "云端 LLM 请求失败或未配置"),
+        None => {
+            let mut error = String::from("云端 LLM 请求失败或未配置");
+            if let Some(note) = acp_attempts {
+                error = format!("{note}；{error}");
+            }
+            ChatOutcome::err("cloud", error)
+        }
     }
 }
 
 fn cloud_chat(cfg: &AiConfig, system: &str, user: &str) -> Option<String> {
     let model_cfg = default_chat_model(cfg)?;
-    if !is_configured(cfg) {
+    if !has_cloud_key(cfg) {
         return None;
     }
     let model = if model_cfg.model.trim().is_empty() {

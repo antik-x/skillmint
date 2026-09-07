@@ -21,7 +21,8 @@ impl super::Detector for CapabilityGapDetector {
             "SELECT prompt_text, IFNULL(prompt_kind, '') FROM collected_prompts
              WHERE device_id = ?1
                AND IFNULL(started_at, 0) >= ?2 AND IFNULL(started_at, 0) <= ?3
-               AND prompt_text IS NOT NULL AND length(prompt_text) > 0",
+               AND prompt_text IS NOT NULL AND length(prompt_text) > 0
+               AND IFNULL(origin, 'user') != 'skillmint_acp'",
         )?;
         let rows = stmt.query_map(
             rusqlite::params![ctx.device_id, ctx.window_start, ctx.window_end],

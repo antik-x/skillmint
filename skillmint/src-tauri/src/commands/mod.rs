@@ -645,17 +645,35 @@ pub fn list_recent_collection_jobs(
     db.list_recent_collection_jobs(limit).map_err(|e| e.to_string())
 }
 
-/// Test an ACP connection by id. Returns the agent's stdout / status text.
+/// Test an ACP connection by id（P5：真实 initialize + session/new 握手探测，
+/// 零额度消耗）。async + spawn_blocking：npx 冷启动可达数十秒，绝不占主线程。
 #[tauri::command]
-pub fn test_acp_transport(id: String, state: State<'_, AppState>) -> Result<String, String> {
-    let settings = state.settings.lock().map_err(|e| e.to_string())?;
-    crate::acp::test_transport(&settings.ai.acp_connections, &id).map_err(|e| e.to_string())
+pub async fn test_acp_transport(id: String, state: State<'_, AppState>) -> Result<String, String> {
+    let connections = {
+        let settings = state.settings.lock().map_err(|e| e.to_string())?;
+        settings.ai.acp_connections.clone()
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::acp::test_transport(&connections, &id)
+    })
+    .await
+    .map_err(|e| format!("测试任务失败: {e}"))?
+    .map_err(|e| e.to_string())
 }
 
-/// P1-1: scan PATH for locally installed ACP-compatible agents.
+/// P1-1: scan for locally installed ACP-compatible agents.
 #[tauri::command]
 pub fn detect_local_agents() -> Result<Vec<crate::acp::DetectedAgent>, String> {
     Ok(crate::acp::detect_available_agents())
+}
+
+/// P5/Q7: 每条 ACP 连接的健康状态（状态灯 + 冷却剩余），来自最近调用结果。
+#[tauri::command]
+pub fn get_acp_health(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::acp::AcpHealthEntry>, String> {
+    let settings = state.settings.lock().map_err(|e| e.to_string())?;
+    Ok(crate::acp::health_snapshot(&settings.ai.acp_connections))
 }
 
 /// P0: list recent LLM/ACP request audit logs.
@@ -684,7 +702,7 @@ pub fn test_ai_model(model_id: String, state: State<'_, AppState>) -> Result<Str
     if !model.capabilities.contains(&"chat".to_string()) {
         return Err("该模型不支持对话能力".to_string());
     }
-    let reply = crate::llm::chat(
+    let reply = crate::llm::chat_cloud(
         cfg,
         "你是一个连接测试助手。请只回复：连接正常。",
         "测试连接，请只回复：连接正常。",
@@ -814,35 +832,49 @@ pub fn get_window_metrics(
 }
 
 /// PRD-08 §3.3 (P1): classify the four semantic axes of unclassified prompts
-/// via the configured LLM. Returns counts; with no API key, reports `skipped`.
+/// via the configured LLM (cloud or local ACP). Returns counts; with nothing
+/// configured, reports `skipped`.
+///
+/// async + spawn_blocking：LLM/ACP 调用可达分钟级，绝不占主线程（P5，对齐
+/// Q2/Q4 丝滑度改造的验收标准）。锁策略由 classifier 内部保证（长 I/O 锁外）。
 #[tauri::command]
-pub fn classify_prompts(
+pub async fn classify_prompts(
     source: Option<String>,
-    state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<crate::classifier::ClassifyResult, String> {
-    let cfg = {
-        let settings = state.settings.lock().map_err(|e| e.to_string())?;
-        settings.ai.clone()
-    };
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    let src = source.as_deref().filter(|s| !s.is_empty());
-    crate::classifier::classify_prompts(&db, src, &cfg).map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let cfg = {
+            let settings = state.settings.lock().map_err(|e| e.to_string())?;
+            settings.ai.clone()
+        };
+        let src = source.as_deref().filter(|s| !s.is_empty());
+        crate::classifier::classify_prompts(&state.db, src, &cfg).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("分类任务失败: {e}"))?
 }
 
 /// PRD-08 §3.6 (P1): generate (or re-generate) the LLM daily summary for a date.
 /// Returns the structured outcome — generated summary, no-key, no-sessions, or
 /// failed — so the UI can show a tailored message.
+///
+/// async + spawn_blocking：LLM/ACP 调用可达分钟级，绝不占主线程（P5）。
 #[tauri::command]
-pub fn generate_daily_summary(
+pub async fn generate_daily_summary(
     date: String,
-    state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<crate::analyzer::Outcome, String> {
-    let cfg = {
-        let settings = state.settings.lock().map_err(|e| e.to_string())?;
-        settings.ai.clone()
-    };
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    crate::analyzer::generate_daily_summary(&db, &date, &cfg).map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let cfg = {
+            let settings = state.settings.lock().map_err(|e| e.to_string())?;
+            settings.ai.clone()
+        };
+        crate::analyzer::generate_daily_summary(&state.db, &date, &cfg).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("摘要任务失败: {e}"))?
 }
 
 /// PRD-08 §3.6 (P1): load a cached daily summary for a date (if generated

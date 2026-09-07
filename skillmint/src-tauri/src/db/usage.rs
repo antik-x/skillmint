@@ -389,6 +389,7 @@ impl Db {
                FROM projects p
                LEFT JOIN collected_sessions s
                  ON s.project_id = p.id AND IFNULL(s.start_time, 0) >= ?1
+                    AND IFNULL(s.origin, 'user') != 'skillmint_acp'
                LEFT JOIN collected_token_usage t
                  ON t.session_id = s.id
                WHERE p.device_id = ?2
@@ -418,12 +419,14 @@ impl Db {
         let cutoff = if days == 0 { 0 } else { now.saturating_sub((days as u64) * 86400) };
 
         let session_count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM collected_sessions WHERE source = ?1 AND IFNULL(start_time, 0) >= ?2",
+            "SELECT COUNT(*) FROM collected_sessions WHERE source = ?1 AND IFNULL(start_time, 0) >= ?2
+             AND IFNULL(origin, 'user') != 'skillmint_acp'",
             params![source, cutoff],
             |row| row.get(0),
         )?;
         let prompt_count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM collected_prompts WHERE source = ?1 AND IFNULL(started_at, 0) >= ?2",
+            "SELECT COUNT(*) FROM collected_prompts WHERE source = ?1 AND IFNULL(started_at, 0) >= ?2
+             AND IFNULL(origin, 'user') != 'skillmint_acp'",
             params![source, cutoff],
             |row| row.get(0),
         )?;
@@ -436,6 +439,7 @@ impl Db {
                   COALESCE(SUM(total_tokens), 0)
                FROM collected_token_usage
                WHERE source = ?1
+                 AND IFNULL(origin, 'user') != 'skillmint_acp'
                  AND session_id IN (SELECT id FROM collected_sessions WHERE IFNULL(start_time,0) >= ?2)"#,
             params![source, cutoff],
             |row| {

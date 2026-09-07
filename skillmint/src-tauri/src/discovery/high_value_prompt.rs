@@ -31,7 +31,8 @@ impl super::Detector for HighValuePromptDetector {
                ) tu ON tu.session_id = p.session_id
                WHERE p.device_id = ?1
                  AND IFNULL(p.started_at, 0) >= ?2 AND IFNULL(p.started_at, 0) <= ?3
-                 AND p.prompt_text IS NOT NULL AND length(p.prompt_text) >= ?4"#,
+                 AND p.prompt_text IS NOT NULL AND length(p.prompt_text) >= ?4
+                 AND IFNULL(p.origin, 'user') != 'skillmint_acp'"#,
         )?;
 
         let rows = stmt.query_map(

@@ -242,11 +242,13 @@ impl Db {
     }
 
     pub fn upsert_collected_session(&self, s: &CollectedSession) -> Result<()> {
+        // P5/ACP：入库即打来源标（cwd 哨兵目录 / 内容哨兵兜底）。见 origin.rs。
+        let origin = crate::origin::session_origin(s.project_path.as_deref(), s.title_or_prompt.as_deref());
         self.conn.execute(
             r#"INSERT OR REPLACE INTO collected_sessions
                (id, device_id, source, project_id, agent_id, start_time, end_time,
-                message_count, title_or_prompt, cached_at, project_path, quality_score)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"#,
+                message_count, title_or_prompt, cached_at, project_path, quality_score, origin)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"#,
             params![
                 s.id,
                 s.device_id,
@@ -260,6 +262,7 @@ impl Db {
                 s.cached_at,
                 s.project_path,
                 s.quality_score,
+                origin,
             ],
         )?;
         Ok(())
@@ -279,12 +282,22 @@ impl Db {
                 }
             })
             .unwrap_or(crate::prompt_kind::PROMPT_KIND_NON_USER);
+        // P5/ACP：来源 = 会话来源；文本命中内容哨兵时升级为副产品。
+        let session_origin: String = self
+            .conn
+            .query_row(
+                "SELECT IFNULL(origin, 'user') FROM collected_sessions WHERE id = ?1",
+                params![p.session_id],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| crate::origin::ORIGIN_USER.to_string());
+        let origin = crate::origin::prompt_origin(&session_origin, p.prompt_text.as_deref());
         self.conn.execute(
             r#"INSERT OR REPLACE INTO collected_prompts
                (id, device_id, session_id, source, project_id, prompt_text, started_at,
                 duration_ms, requested_action, target_object, interaction_state,
-                interaction_mode, confidence, tool_calls, tool_errors, prompt_kind)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"#,
+                interaction_mode, confidence, tool_calls, tool_errors, prompt_kind, origin)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)"#,
             params![
                 p.id,
                 p.device_id,
@@ -302,6 +315,7 @@ impl Db {
                 p.tool_calls,
                 p.tool_errors,
                 prompt_kind,
+                origin,
             ],
         )?;
         Ok(())
@@ -312,12 +326,21 @@ impl Db {
     /// (prevents double counting when a file is partially re-read). Simplest correct approach:
     /// INSERT OR REPLACE with the freshly computed per-(session,model) totals.
     pub fn upsert_collected_token_usage(&self, t: &CollectedTokenUsage) -> Result<()> {
+        // P5/ACP：token 行继承会话来源（副产品会话的分析开销不计入用户成本指标）。
+        let origin: String = self
+            .conn
+            .query_row(
+                "SELECT IFNULL(origin, 'user') FROM collected_sessions WHERE id = ?1",
+                params![t.session_id],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| crate::origin::ORIGIN_USER.to_string());
         self.conn.execute(
             r#"INSERT OR REPLACE INTO collected_token_usage
                (id, device_id, session_id, source, project_id, model_id, input_tokens,
                 output_tokens, reasoning_tokens, cache_creation_input_tokens,
-                cache_read_input_tokens, total_tokens, model_calls, tool_calls, duration_ms)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"#,
+                cache_read_input_tokens, total_tokens, model_calls, tool_calls, duration_ms, origin)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"#,
             params![
                 t.id,
                 t.device_id,
@@ -334,6 +357,7 @@ impl Db {
                 t.model_calls,
                 t.tool_calls,
                 t.duration_ms,
+                origin,
             ],
         )?;
         Ok(())

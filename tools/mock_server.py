@@ -2106,19 +2106,27 @@ def cmd_save_agent(conn, args):
 
 
 def cmd_detect_local_agents(conn, args):
+    # P5：只列 ACP 兼容命令（kimi 原生；claude/codex 经 Zed 适配器）。ZCode 无 ACP。
     import shutil
-    candidates = [
-        ("claude", "Claude Code", ["--mcp"]),
-        ("claude-cli", "Claude Code CLI", ["--mcp"]),
-        ("kimi", "Kimi Code", []),
-        ("kimi-code", "Kimi Code", []),
-        ("codex", "OpenAI Codex CLI", []),
-        ("zcode", "ZCode", []),
-    ]
     found = []
-    for cmd, name, cargs in candidates:
-        if shutil.which(cmd):
-            found.append({"command": cmd, "display_name": name, "args": cargs})
+    if shutil.which("kimi"):
+        found.append({
+            "command": "kimi", "display_name": "Kimi Code（原生 ACP）", "args": ["acp"],
+            "login_hint": "请在终端运行 `kimi acp --login` 完成 Kimi 登录",
+        })
+    if shutil.which("npx"):
+        if shutil.which("claude"):
+            found.append({
+                "command": "npx", "display_name": "Claude Code（ACP 适配器）",
+                "args": ["-y", "@zed-industries/claude-code-acp@0.16"],
+                "login_hint": "请在终端运行 `claude` 并完成登录",
+            })
+        if shutil.which("codex"):
+            found.append({
+                "command": "npx", "display_name": "OpenAI Codex（ACP 适配器）",
+                "args": ["-y", "@zed-industries/codex-acp@0.16"],
+                "login_hint": "请先完成 Codex CLI 登录（`codex login`）",
+            })
     return found
 
 
@@ -2927,7 +2935,11 @@ def cmd_restore_center_repo(conn, args):
 
 
 def cmd_test_acp_transport(conn, args):
-    return _mock_unsupported("ACP 传输测试需要本地 Agent 进程")
+    return _mock_unsupported("ACP 握手探测需要本地 Agent 进程，请在 Tauri 应用中测试")
+
+
+def cmd_get_acp_health(conn, args):
+    return []
 
 
 def cmd_test_ai_model(conn, args):
@@ -3376,6 +3388,7 @@ COMMANDS = {
     "backup_center_repo": cmd_backup_center_repo,
     "restore_center_repo": cmd_restore_center_repo,
     "test_acp_transport": cmd_test_acp_transport,
+    "get_acp_health": cmd_get_acp_health,
     "test_ai_model": cmd_test_ai_model,
     "open_path_in_terminal": cmd_open_path_in_terminal,
     "list_bundles": cmd_list_bundles,

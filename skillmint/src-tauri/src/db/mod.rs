@@ -350,7 +350,8 @@ impl Db {
                 message_count INTEGER,
                 title_or_prompt TEXT,
                 cached_at INTEGER,
-                project_path TEXT
+                project_path TEXT,
+                origin TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_cs_device ON collected_sessions(device_id);
 
@@ -369,7 +370,8 @@ impl Db {
                 interaction_mode TEXT,
                 confidence REAL,
                 tool_calls INTEGER,
-                tool_errors INTEGER
+                tool_errors INTEGER,
+                origin TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_cp_device ON collected_prompts(device_id);
 
@@ -388,7 +390,8 @@ impl Db {
                 total_tokens INTEGER,
                 model_calls INTEGER,
                 tool_calls INTEGER,
-                duration_ms INTEGER
+                duration_ms INTEGER,
+                origin TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_ctu_device ON collected_token_usage(device_id);
 
@@ -776,6 +779,12 @@ impl Db {
         // 老数据为 NULL，检测器按规则兜底过滤）。见 prompt_kind.rs。
         self.ensure_column("collected_prompts", "prompt_kind", "TEXT")?;
         self.retag_prompt_kinds()?;
+
+        // P5/ACP 防自吞尾：三张采集表打来源标（user | skillmint_acp，NULL 视为
+        // user）。老数据无污染（真机核查 2026-09-07），无需数据迁移。见 origin.rs。
+        self.ensure_column("collected_sessions", "origin", "TEXT")?;
+        self.ensure_column("collected_prompts", "origin", "TEXT")?;
+        self.ensure_column("collected_token_usage", "origin", "TEXT")?;
 
         // PRD-01: extend agents with usage-derived columns.
         self.ensure_column("agents", "last_used_at", "INTEGER")?;

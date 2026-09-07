@@ -86,6 +86,7 @@ fn session_samples(ctx: &DetectContext, skill_id: &str) -> anyhow::Result<(Vec<i
              ON a.device_id = s.device_id AND a.session_id = s.id
            WHERE s.device_id = ?1
              AND IFNULL(s.start_time, 0) >= ?2 AND IFNULL(s.start_time, 0) <= ?3
+             AND IFNULL(s.origin, 'user') != 'skillmint_acp'
              AND a.skill_id = ?4"#,
     )?;
     let rows = stmt.query_map(
@@ -100,6 +101,7 @@ fn session_samples(ctx: &DetectContext, skill_id: &str) -> anyhow::Result<(Vec<i
            FROM collected_sessions s
            WHERE s.device_id = ?1
              AND IFNULL(s.start_time, 0) >= ?2 AND IFNULL(s.start_time, 0) <= ?3
+             AND IFNULL(s.origin, 'user') != 'skillmint_acp'
              AND NOT EXISTS (
                  SELECT 1 FROM skill_usage_attributions a
                  WHERE a.device_id = s.device_id AND a.session_id = s.id AND a.skill_id = ?4

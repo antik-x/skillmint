@@ -5377,6 +5377,7 @@ fn test_daily_summary_rule_path_generates_without_llm() {
     }
 
     let cfg = crate::settings::AiConfig::default();
+    let db = std::sync::Mutex::new(db);
     let outcome = crate::analyzer::generate_daily_summary(&db, &date, &cfg).unwrap();
     let summary = match outcome {
         crate::analyzer::Outcome::Generated { summary } => summary,
@@ -5399,7 +5400,212 @@ fn test_daily_summary_rule_path_generates_without_llm() {
         summary.activities[0].summary
     );
 
-    let persisted = db.get_daily_summary(&date).unwrap().expect("persisted row");
+    let persisted = db.lock().unwrap().get_daily_summary(&date).unwrap().expect("persisted row");
     assert_eq!(persisted.highlights, summary.highlights);
     assert_eq!(persisted.activities.len(), summary.activities.len());
+}
+
+// ---------------------------------------------------------------------------
+// P5/ACP 防自吞尾：origin 打标 + 分析消费端过滤
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_origin_stamp_on_collection_write() {
+    let (_tmp, db, _settings) = setup_test_env();
+    let ws = crate::origin::acp_workspace_dir();
+
+    // 会话 A：cwd 命中哨兵目录 → skillmint_acp；会话 B：普通项目 → user。
+    let session_a = crate::models::CollectedSession {
+        id: "d1:claude-code:acp-s".into(),
+        device_id: "d1".into(),
+        source: "claude-code".into(),
+        project_id: None,
+        agent_id: None,
+        start_time: Some(1_700_000_000),
+        end_time: None,
+        message_count: 4,
+        title_or_prompt: Some("分类任务".into()),
+        cached_at: 1_700_000_100,
+        project_path: Some(ws.to_string_lossy().to_string()),
+        quality_score: Some(50.0),
+    };
+    db.upsert_collected_session(&session_a).unwrap();
+    let session_b = crate::models::CollectedSession {
+        project_path: Some("/Users/x/demo".into()),
+        title_or_prompt: Some("真实用户会话".into()),
+        id: "d1:claude-code:user-s".into(),
+        ..session_a.clone()
+    };
+    db.upsert_collected_session(&session_b).unwrap();
+
+    let origin_of = |id: &str| -> String {
+        db.conn_ref()
+            .query_row(
+                "SELECT IFNULL(origin, 'user') FROM collected_sessions WHERE id = ?1",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(origin_of(&session_a.id), crate::origin::ORIGIN_SKILLMINT_ACP);
+    assert_eq!(origin_of(&session_b.id), crate::origin::ORIGIN_USER);
+
+    // prompt 继承会话来源；内容哨兵兜底升级。
+    let prompt = |id: &str, session_id: &str, text: &str| crate::models::CollectedPrompt {
+        id: id.into(),
+        device_id: "d1".into(),
+        session_id: session_id.into(),
+        source: "claude-code".into(),
+        project_id: None,
+        prompt_text: Some(text.into()),
+        started_at: Some(1_700_000_050),
+        duration_ms: None,
+        requested_action: None,
+        target_object: None,
+        interaction_state: None,
+        interaction_mode: None,
+        confidence: None,
+        tool_calls: None,
+        tool_errors: None,
+    };
+    db.upsert_collected_prompt(&prompt("acp-p", &session_a.id, "分类这批 prompt")).unwrap();
+    db.upsert_collected_prompt(&prompt(
+        "sentinel-p",
+        &session_b.id,
+        &format!("{} 開始分析", crate::origin::ANALYSIS_SENTINEL),
+    ))
+    .unwrap();
+    db.upsert_collected_prompt(&prompt("user-p", &session_b.id, "帮我重构登录模块")).unwrap();
+
+    let origin_of_prompt = |id: &str| -> String {
+        db.conn_ref()
+            .query_row(
+                "SELECT IFNULL(origin, 'user') FROM collected_prompts WHERE id = ?1",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(origin_of_prompt("acp-p"), crate::origin::ORIGIN_SKILLMINT_ACP);
+    assert_eq!(origin_of_prompt("sentinel-p"), crate::origin::ORIGIN_SKILLMINT_ACP);
+    assert_eq!(origin_of_prompt("user-p"), crate::origin::ORIGIN_USER);
+}
+
+#[test]
+fn test_origin_excluded_from_all_analysis_consumers() {
+    let (_tmp, db, _settings) = setup_test_env();
+    let ws = crate::origin::acp_workspace_dir();
+
+    let mk_session = |id: &str, path: Option<String>| crate::models::CollectedSession {
+        id: id.into(),
+        device_id: "d1".into(),
+        source: "claude-code".into(),
+        project_id: None,
+        agent_id: None,
+        start_time: Some(1_700_000_000),
+        end_time: None,
+        message_count: 3,
+        title_or_prompt: Some("t".into()),
+        cached_at: 1_700_000_100,
+        project_path: path,
+        quality_score: None,
+    };
+    db.upsert_collected_session(&mk_session("acp-s", Some(ws.to_string_lossy().to_string()))).unwrap();
+    db.upsert_collected_session(&mk_session("user-s", Some("/Users/x/demo".into()))).unwrap();
+
+    let mk_prompt = |id: &str, session_id: &str| crate::models::CollectedPrompt {
+        id: id.into(),
+        device_id: "d1".into(),
+        session_id: session_id.into(),
+        source: "claude-code".into(),
+        project_id: None,
+        prompt_text: Some("重构登录模块，保持向后兼容".into()),
+        started_at: Some(1_700_000_050),
+        duration_ms: Some(300_000),
+        requested_action: None,
+        target_object: None,
+        interaction_state: None,
+        interaction_mode: None,
+        confidence: None,
+        tool_calls: None,
+        tool_errors: None,
+    };
+    db.upsert_collected_prompt(&mk_prompt("acp-p", "acp-s")).unwrap();
+    db.upsert_collected_prompt(&mk_prompt("user-p", "user-s")).unwrap();
+
+    let mk_token = |id: &str, session_id: &str| crate::models::CollectedTokenUsage {
+        id: id.into(),
+        device_id: "d1".into(),
+        session_id: session_id.into(),
+        source: "claude-code".into(),
+        project_id: None,
+        model_id: Some("claude-sonnet".into()),
+        input_tokens: 100,
+        output_tokens: 50,
+        reasoning_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        total_tokens: 150,
+        model_calls: 1,
+        tool_calls: 0,
+        duration_ms: None,
+    };
+    db.upsert_collected_token_usage(&mk_token("acp-t", "acp-s")).unwrap();
+    db.upsert_collected_token_usage(&mk_token("user-t", "user-s")).unwrap();
+
+    // 语义分类待办（Q8）：只有 user-origin + user-kind 的行。
+    let pending = db.load_unclassified_prompts(None).unwrap();
+    let ids: Vec<&str> = pending.iter().map(|p| p.id.as_str()).collect();
+    assert_eq!(ids, vec!["user-p"], "byproduct 与 non_user 行不得进分类器：{ids:?}");
+    assert_eq!(db.count_unclassified_prompts(None).unwrap(), 1);
+
+    // 每日摘要 / 周报会话。
+    use chrono::TimeZone as _;
+    let day = chrono::Local
+        .timestamp_opt(1_700_000_000, 0)
+        .single()
+        .unwrap()
+        .format("%Y-%m-%d")
+        .to_string();
+    let day_sessions = db.query_sessions_for_day(&day).unwrap();
+    let day_ids: Vec<&str> = day_sessions.iter().map(|s| s.source.as_str()).collect();
+    assert_eq!(day_ids.len(), 1, "按日查询应排除副产品会话");
+
+    let range = db.query_sessions_for_day_range(1_699_999_999, 1_700_000_200).unwrap();
+    assert_eq!(range.len(), 1, "按范围查询应排除副产品会话");
+
+    // 窗口评估样本。
+    let usage = db.query_usage_samples(1_699_999_999, 1_700_000_200, None).unwrap();
+    assert_eq!(usage.len(), 1, "token 样本应排除副产品会话");
+    let prompts = db.query_prompt_samples(1_699_999_999, 1_700_000_200, None).unwrap();
+    assert_eq!(prompts.len(), 1, "prompt 样本应排除副产品");
+}
+
+#[test]
+fn test_is_configured_includes_acp_only() {
+    // Q3：无云端 Key 但有启用的 ACP 连接 → AI 已配置（无 Key 纯本地模式）。
+    let cfg = crate::settings::AiConfig::default();
+    assert!(!crate::llm::is_configured(&cfg));
+    assert!(!crate::llm::has_enabled_acp(&cfg));
+
+    let mut cfg = crate::settings::AiConfig::default();
+    cfg.acp_connections.push(crate::settings::AcpConnectionConfig {
+        id: "kimi".into(),
+        name: "Kimi".into(),
+        enabled: true,
+        transport: crate::acp::AcpTransport::Stdio {
+            command: "kimi".into(),
+            args: vec!["acp".into()],
+            env: Default::default(),
+        },
+    });
+    assert!(crate::llm::has_enabled_acp(&cfg));
+    assert!(crate::llm::is_configured(&cfg), "ACP-only 应视为已配置");
+    assert!(!crate::llm::has_cloud_key(&cfg), "无 Key 时云端口径必须为 false");
+
+    // 禁用的连接不算。
+    let mut cfg2 = cfg.clone();
+    cfg2.acp_connections[0].enabled = false;
+    assert!(!crate::llm::has_enabled_acp(&cfg2));
+    assert!(!crate::llm::is_configured(&cfg2));
 }

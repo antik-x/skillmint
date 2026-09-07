@@ -25,6 +25,7 @@ mod metrics;
 mod models;
 mod npx;
 mod openviking;
+mod origin;
 mod pricing;
 mod prompt_kind;
 mod remote;
@@ -550,6 +551,7 @@ pub fn run() {
             commands::list_recent_collection_jobs,
             commands::test_acp_transport,
             commands::detect_local_agents,
+            commands::get_acp_health,
             commands::list_llm_request_logs,
             commands::test_ai_model,
             commands::get_agent_usage,

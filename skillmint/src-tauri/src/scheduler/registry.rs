@@ -130,7 +130,6 @@ pub fn build_registry() -> HashMap<TaskKind, TaskExecutor> {
     registry.insert(
         TaskKind::GenerateKnowledgeGraph,
         Arc::new(|state| {
-            let db = state.db.lock().map_err(|e| e.to_string())?;
             let (device_id, center_repo) = {
                 let settings = state.settings.lock().map_err(|e| e.to_string())?;
                 (settings.device_id.clone(), settings.center_repo.clone())
@@ -139,9 +138,12 @@ pub fn build_registry() -> HashMap<TaskKind, TaskExecutor> {
                 let settings = state.settings.lock().map_err(|e| e.to_string())?;
                 settings.ai.clone()
             };
-            let (nodes, edges) =
-                crate::kg::analyze_all_skills(&db, &device_id, &center_repo).map_err(|e| e.to_string())?;
-            let classify = crate::classifier::classify_prompts(&db, None, &cfg).map_err(|e| e.to_string())?;
+            let (nodes, edges) = {
+                let db = state.db.lock().map_err(|e| e.to_string())?;
+                crate::kg::analyze_all_skills(&db, &device_id, &center_repo).map_err(|e| e.to_string())?
+            };
+            // P5：分类器接收 &Mutex<Db>，LLM/ACP 调用在锁外。
+            let classify = crate::classifier::classify_prompts(&state.db, None, &cfg).map_err(|e| e.to_string())?;
             Ok(format!(
                 "生成 {} 个节点 / {} 条边，分类 {} / {} 条 prompt",
                 nodes, edges, classify.classified, classify.eligible
@@ -152,7 +154,6 @@ pub fn build_registry() -> HashMap<TaskKind, TaskExecutor> {
     registry.insert(
         TaskKind::GenerateDailySummary,
         Arc::new(|state| {
-            let db = state.db.lock().map_err(|e| e.to_string())?;
             let cfg = {
                 let settings = state.settings.lock().map_err(|e| e.to_string())?;
                 settings.ai.clone()
@@ -162,7 +163,7 @@ pub fn build_registry() -> HashMap<TaskKind, TaskExecutor> {
                 d.format("%Y-%m-%d").to_string()
             };
             let outcome =
-                crate::analyzer::generate_daily_summary(&db, &yesterday, &cfg).map_err(|e| e.to_string())?;
+                crate::analyzer::generate_daily_summary(&state.db, &yesterday, &cfg).map_err(|e| e.to_string())?;
             match outcome {
                 crate::analyzer::Outcome::Generated { summary } => {
                     Ok(format!("已生成 {} 摘要", summary.date))

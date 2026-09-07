@@ -48,7 +48,8 @@ impl Db {
                     FROM collected_token_usage tu
                     LEFT JOIN collected_sessions s ON s.id = tu.session_id
                     WHERE IFNULL(s.start_time, 0) >= ?1 AND IFNULL(s.start_time, 0) <= ?2
-                      AND (?3 = '' OR tu.source = ?3)"#;
+                      AND (?3 = '' OR tu.source = ?3)
+                      AND IFNULL(tu.origin, 'user') != 'skillmint_acp'"#;
         let mut stmt = self.conn.prepare(sql)?;
         let src = source.unwrap_or("");
         let rows = stmt.query_map(params![start, end, src], |row| {
@@ -89,7 +90,8 @@ impl Db {
                     FROM collected_prompts p
                     LEFT JOIN collected_sessions s ON s.id = p.session_id
                     WHERE IFNULL(p.started_at, 0) >= ?1 AND IFNULL(p.started_at, 0) <= ?2
-                      AND (?3 = '' OR p.source = ?3)"#;
+                      AND (?3 = '' OR p.source = ?3)
+                      AND IFNULL(p.origin, 'user') != 'skillmint_acp'"#;
         let mut stmt = self.conn.prepare(sql)?;
         let src = source.unwrap_or("");
         let rows = stmt.query_map(params![start, end, src], |row| {
@@ -110,24 +112,31 @@ impl Db {
 
     /// PRD-08 §3.3 (P1): count prompts that have text but are not yet labeled.
     /// Used by the classifier to report the eligible total when LLM is off.
+    /// P5/Q8：只统计用户真实输入（origin=user 且 prompt_kind=user）——系统注入
+    /// 行与 ACP 副产品行永不进 LLM。
     pub fn count_unclassified_prompts(&self, source: Option<&str>) -> Result<usize> {
         let sql = "SELECT COUNT(*) FROM collected_prompts
                    WHERE IFNULL(prompt_text,'') != '' AND requested_action IS NULL
-                     AND (?1 = '' OR source = ?1)";
+                     AND (?1 = '' OR source = ?1)
+                     AND IFNULL(prompt_kind, 'user') = 'user'
+                     AND IFNULL(origin, 'user') = 'user'";
         let src = source.unwrap_or("");
         let n: i64 = self.conn.query_row(sql, params![src], |row| row.get(0))?;
         Ok(n as usize)
     }
 
     /// PRD-08 §3.3 (P1): load prompts awaiting classification (text present,
-    /// no label yet). Returns (id, prompt_text).
+    /// no label yet). Returns (id, prompt_text). Same user-only caliber as
+    /// `count_unclassified_prompts`（P5/Q8）.
     pub fn load_unclassified_prompts(
         &self,
         source: Option<&str>,
     ) -> Result<Vec<crate::classifier::UnclassifiedPrompt>> {
         let sql = "SELECT id, prompt_text FROM collected_prompts
                    WHERE IFNULL(prompt_text,'') != '' AND requested_action IS NULL
-                     AND (?1 = '' OR source = ?1)";
+                     AND (?1 = '' OR source = ?1)
+                     AND IFNULL(prompt_kind, 'user') = 'user'
+                     AND IFNULL(origin, 'user') = 'user'";
         let src = source.unwrap_or("");
         let mut stmt = self.conn.prepare(sql)?;
         let rows = stmt.query_map(params![src], |row| {
@@ -173,6 +182,7 @@ impl Db {
             "SELECT id, project_path, title_or_prompt, message_count
              FROM collected_sessions
              WHERE start_time >= ?1 AND start_time < ?2
+               AND IFNULL(origin, 'user') != 'skillmint_acp'
              ORDER BY start_time",
         )?;
         let rows = stmt.query_map(params![start, end], |row| {
@@ -195,6 +205,7 @@ impl Db {
              FROM collected_sessions
              WHERE date(start_time, 'unixepoch', 'localtime') = ?1
                AND start_time IS NOT NULL
+               AND IFNULL(origin, 'user') != 'skillmint_acp'
              ORDER BY start_time",
         )?;
         let rows = stmt.query_map(params![date], |row| {
@@ -210,11 +221,14 @@ impl Db {
     }
 
     /// PRD-08 §3.6 (P1): persist a generated daily summary (replace by date).
+    /// P5：provider/model 反映真实执行者（acp:<连接名> / cloud:<模型id> /
+    /// local），不再硬编码 'skillmint'。
     pub fn save_daily_summary(
         &self,
         date: &str,
         summary: &crate::analyzer::DailySummary,
         model: &str,
+        provider: &str,
     ) -> Result<()> {
         let highlights = serde_json::to_string(&summary.highlights)?;
         let activities = serde_json::to_string(&summary.activities)?;
@@ -222,8 +236,8 @@ impl Db {
         self.conn.execute(
             "INSERT OR REPLACE INTO digest_summary
              (date, highlights, activities, model, provider, created_at)
-             VALUES (?1, ?2, ?3, ?4, 'skillmint', ?5)",
-            params![date, highlights, activities, model, now],
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![date, highlights, activities, model, provider, now],
         )?;
         Ok(())
     }
@@ -358,6 +372,8 @@ impl Db {
                WHERE IFNULL(p.started_at, 0) >= ?1 AND IFNULL(p.started_at, 0) <= ?2
                  AND p.requested_action IS NOT NULL
                  AND IFNULL(p.confidence, 1.0) >= ?3
+                 AND IFNULL(p.prompt_kind, 'user') = 'user'
+                 AND IFNULL(p.origin, 'user') != 'skillmint_acp'
                GROUP BY p.source, p.requested_action"#,
         )?;
         let rows = stmt.query_map(params![start, end, min_confidence], |row| {
@@ -384,6 +400,8 @@ impl Db {
                      WHERE IFNULL(p.started_at, 0) >= ?1 AND IFNULL(p.started_at, 0) <= ?2
                        AND p.source = ?3
                        AND p.requested_action IS NOT NULL
+                       AND IFNULL(p.prompt_kind, 'user') = 'user'
+                       AND IFNULL(p.origin, 'user') != 'skillmint_acp'
                        AND (?4 = '' OR p.requested_action = ?4)
                      ORDER BY p.started_at DESC
                      LIMIT ?5"#;
@@ -414,7 +432,9 @@ impl Db {
             r#"SELECT p.source, p.duration_ms
                FROM collected_prompts p
                WHERE IFNULL(p.started_at, 0) >= ?1 AND IFNULL(p.started_at, 0) <= ?2
-                 AND p.duration_ms IS NOT NULL"#,
+                 AND p.duration_ms IS NOT NULL
+                 AND IFNULL(p.prompt_kind, 'user') = 'user'
+                 AND IFNULL(p.origin, 'user') != 'skillmint_acp'"#,
         )?;
         let rows = stmt.query_map(params![start, end], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))

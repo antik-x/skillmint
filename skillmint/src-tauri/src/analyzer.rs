@@ -100,15 +100,26 @@ pub enum Outcome {
 ///
 /// 验收口径「规则版打底、AI 增强」（docs/product-epics.md）：未配置 AI 时走本地
 /// 模板汇总（绝不因缺模型而停转），配置后走 LLM 生成版。
-pub fn generate_daily_summary(db: &Db, date: &str, cfg: &AiConfig) -> anyhow::Result<Outcome> {
-    let sessions = db.query_sessions_for_day(date)?;
+///
+/// P5：接收 `&Mutex<Db>`——LLM/ACP 调用（可达分钟级）在锁外执行，锁只包住
+/// load/save 短临界区（验收标准：长 I/O 不进锁）。
+pub fn generate_daily_summary(
+    db: &std::sync::Mutex<Db>,
+    date: &str,
+    cfg: &AiConfig,
+) -> anyhow::Result<Outcome> {
+    let sessions = {
+        let d = db.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+        d.query_sessions_for_day(date)?
+    };
     if sessions.is_empty() {
         return Ok(Outcome::NoSessions);
     }
 
     if !llm::is_configured(cfg) {
         let summary = template_daily_summary(date, &sessions);
-        db.save_daily_summary(date, &summary, "规则版")?;
+        let d = db.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+        d.save_daily_summary(date, &summary, "规则版", "local")?;
         return Ok(Outcome::Generated { summary });
     }
 
@@ -117,9 +128,13 @@ pub fn generate_daily_summary(db: &Db, date: &str, cfg: &AiConfig) -> anyhow::Re
         return Ok(Outcome::NoSessions);
     }
 
-    let system = system_prompt(date);
+    // LLM/ACP 调用：锁外。
+    let system = crate::origin::analysis_system_prompt(&system_prompt(date));
     let outcome = llm::chat_with_outcome(cfg, &system, &format!("Logs:\n{context}"));
-    db.log_llm_request(&outcome, "daily_summary");
+    {
+        let d = db.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+        d.log_llm_request(&outcome, "daily_summary");
+    }
     let content = match outcome.content {
         Some(c) => c,
         None => return Ok(Outcome::Failed { reason: outcome.error.unwrap_or_else(|| "LLM 请求失败".into()) }),
@@ -135,13 +150,22 @@ pub fn generate_daily_summary(db: &Db, date: &str, cfg: &AiConfig) -> anyhow::Re
     };
 
     // Persist into digest_summary (replace any existing row for this date).
-    let model_name = cfg
+    // P5：provider/model 反映真实执行者——ACP 连接记连接名，云端记模型名。
+    let cloud_model_name = cfg
         .default_chat_model_id
         .as_ref()
         .and_then(|id| cfg.models.iter().find(|m| &m.id == id))
-        .map(|m| m.model.as_str())
-        .unwrap_or("");
-    db.save_daily_summary(date, &summary, model_name)?;
+        .map(|m| m.model.clone())
+        .unwrap_or_default();
+    let (model_name, provider_tag) = if let Some(conn) = outcome.provider.strip_prefix("acp:") {
+        (conn.to_string(), outcome.provider.clone())
+    } else if outcome.provider.starts_with("cloud:") {
+        (cloud_model_name, outcome.provider.clone())
+    } else {
+        (cloud_model_name, "skillmint".to_string())
+    };
+    let d = db.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+    d.save_daily_summary(date, &summary, &model_name, &provider_tag)?;
     Ok(Outcome::Generated { summary })
 }
 
